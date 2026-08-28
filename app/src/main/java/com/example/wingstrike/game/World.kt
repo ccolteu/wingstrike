@@ -24,6 +24,7 @@ data class Shot(
   var vy: Float,
   var fromPlayer: Boolean,
   var alive: Boolean = true,
+  var missile: Boolean = false,
 )
 
 data class Mob(
@@ -35,15 +36,33 @@ data class Mob(
   var fire: Float = 0.4f,
   var alive: Boolean = true,
   var drop: Boolean = false,
+  var hitFlash: Float = 0f,
 )
 
 data class Pickup(var x: Float, var y: Float, var alive: Boolean = true)
 
-data class Blast(var x: Float, var y: Float, var t: Float = 0f, val big: Boolean = false) {
+enum class SfxKind {
+  SHOT,
+  BOOM,
+  BOOM_BIG,
+}
+
+data class SfxCue(val kind: SfxKind, val x: Float)
+
+data class Blast(
+  var x: Float,
+  var y: Float,
+  var t: Float = 0f,
+  val big: Boolean = false,
+  val scale: Float = 1f,
+  var wait: Float = 0f,
+) {
   val duration: Float
-    get() = if (big) 0.5f else 0.28f
+    get() = if (big) 0.62f else 0.28f
   val progress: Float
     get() = (t / duration).coerceIn(0f, 1f)
+  val visible: Boolean
+    get() = wait <= 0f
 }
 
 class Boss {
@@ -54,21 +73,23 @@ class Boss {
   var pattern: Int = 0
   var fire: Float = 0.4f
   var entered: Boolean = false
+  var hitFlash: Float = 0f
+  var dying: Boolean = false
 
   fun centerX(): Float = x + BOSS_W / 2f
 
   fun centerY(): Float = y + BOSS_H / 2f
 
   companion object {
-    const val BOSS_W = 0.46f
-    const val BOSS_H = 0.20f
+    const val BOSS_W = 0.56f
+    const val BOSS_H = 0.26f
     const val MAX_HP = 90
   }
 }
 
 class World(
   private val random: Random = Random.Default,
-  private val bossAt: Float = 26f,
+  private val bossAt: Float = 42f,
 ) {
   var phase: Phase = Phase.READY
     private set
@@ -96,15 +117,30 @@ class World(
     private set
   var boss: Boss? = null
     private set
+  private var viewAspect = 9f / 16f
+
+  fun setViewSize(widthPx: Float, heightPx: Float) {
+    if (heightPx > 1f) viewAspect = (widthPx / heightPx).coerceIn(0.35f, 0.85f)
+  }
   val mobs: MutableList<Mob> = mutableListOf()
   val shots: MutableList<Shot> = mutableListOf()
   val pickups: MutableList<Pickup> = mutableListOf()
   val blasts: MutableList<Blast> = mutableListOf()
+  private val cues: ArrayDeque<SfxCue> = ArrayDeque()
+
+  fun takeCues(): List<SfxCue> {
+    if (cues.isEmpty()) return emptyList()
+    val out = cues.toList()
+    cues.clear()
+    return out
+  }
 
   private var wantFire = false
   private var fireCool = 0f
   private var spawnCool = 0.6f
   private var wave = 0
+  private var bossDeath = 0f
+  private var deathBoomIn = 0f
 
   fun movePlayer(nx: Float) {
     playerX = nx.coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
@@ -143,15 +179,13 @@ class World(
     if (phase != Phase.PLAYING || bombs <= 0 || !playerOnField()) return
     bombs -= 1
     bombFlash = 0.35f
+    cues += SfxCue(SfxKind.BOOM_BIG, playerX)
     shots.removeAll { !it.fromPlayer }
     mobs.filter { it.alive }.forEach { mob ->
-      mob.hp -= 4
-      if (mob.hp <= 0) killMob(mob)
+      hurtMob(mob, 4)
     }
     boss?.let { b ->
-      b.hp -= 12
-      boom(b.centerX(), b.centerY(), true)
-      if (b.hp <= 0) beatBoss()
+      if (!b.dying) hurtBoss(12)
     }
   }
 
@@ -185,13 +219,29 @@ class World(
     bombFlash = 0f
     warning = 0f
     wantFire = false
+    bossDeath = 0f
+    deathBoomIn = 0f
+    cues.clear()
   }
 
   private fun tickFx(dt: Float) {
     bombFlash = (bombFlash - dt).coerceAtLeast(0f)
     warning = (warning - dt).coerceAtLeast(0f)
-    blasts.forEach { it.t += dt }
-    blasts.removeAll { it.t >= it.duration }
+    blasts.forEach { blast ->
+      if (blast.wait > 0f) {
+        blast.wait -= dt
+        if (blast.wait <= 0f) {
+          blast.wait = 0f
+          cueBoom(blast)
+        }
+      } else {
+        blast.t += dt
+      }
+    }
+    blasts.removeAll { it.wait <= 0f && it.t >= it.duration }
+    mobs.forEach { it.hitFlash = (it.hitFlash - dt).coerceAtLeast(0f) }
+    boss?.let { it.hitFlash = (it.hitFlash - dt).coerceAtLeast(0f) }
+    tickBossDeath(dt)
   }
 
   private fun advance(dt: Float) {
@@ -207,7 +257,7 @@ class World(
     fireCool = (fireCool - dt).coerceAtLeast(0f)
     stageT += dt
     val scrolling = boss == null || boss?.entered == false
-    scroll += (if (scrolling) 0.11f else 0.025f) * dt
+    scroll += (if (scrolling) 0.055f else 0.014f) * dt
     moveShots(dt)
     moveMobs(dt)
     movePickups(dt)
@@ -220,17 +270,18 @@ class World(
   private fun tryShot() {
     if (fireCool > 0f) return
     val y = PLAYER_Y + SHIP_H * 0.06f
-    val n = 1 + power.coerceIn(0, 2)
-    val spread = 0.08f + power * 0.03f
-    if (n == 1) {
-      shots += Shot(playerX, y, 0f, -0.95f, true)
-    } else {
-      for (i in 0 until n) {
-        val t = i / (n - 1f) - 0.5f
-        shots += Shot(playerX + t * 0.03f, y, t * spread * 0.4f, -0.95f, true)
-      }
+    shots += Shot(playerX - 0.018f, y, 0f, -0.62f, true)
+    shots += Shot(playerX + 0.018f, y, 0f, -0.62f, true)
+    if (power >= 1) {
+      shots += Shot(playerX - 0.042f, y + 0.012f, 0f, -0.48f, true, missile = true)
+      shots += Shot(playerX + 0.042f, y + 0.012f, 0f, -0.48f, true, missile = true)
     }
-    fireCool = 0.11f
+    if (power >= 2) {
+      shots += Shot(playerX - 0.055f, y, -0.07f, -0.58f, true)
+      shots += Shot(playerX + 0.055f, y, 0.07f, -0.58f, true)
+    }
+    fireCool = 0.16f
+    cues += SfxCue(SfxKind.SHOT, playerX)
   }
 
   private fun maybeSpawn(dt: Float) {
@@ -248,7 +299,7 @@ class World(
         spawnDive()
       }
     }
-    spawnCool = (1.7f - wave * 0.04f).coerceAtLeast(1.05f)
+    spawnCool = (2.8f - wave * 0.04f).coerceAtLeast(1.8f)
   }
 
   private fun spawnLine() {
@@ -286,10 +337,10 @@ class World(
     repeat(2) { i ->
       mobs +=
         Mob(
-          x = 0.22f + i * 0.42f,
-          y = -0.12f,
+          x = 0.12f + i * 0.46f,
+          y = -0.16f,
           kind = MobKind.BOMBER,
-          hp = 5,
+          hp = 12,
           fire = 0.6f,
           drop = true,
         )
@@ -306,41 +357,46 @@ class World(
 
   private fun stepBoss(dt: Float) {
     val b = boss ?: return
+    if (b.dying) return
     b.t += dt
     if (!b.entered) {
-      b.y += 0.12f * dt
+      b.y += 0.07f * dt
       if (b.y >= 0.08f) {
         b.y = 0.08f
         b.entered = true
       }
       return
     }
-    b.x = 0.5f - Boss.BOSS_W / 2f + sin(b.t * 0.7f).toFloat() * 0.22f
+    b.x = 0.5f - Boss.BOSS_W / 2f + sin(b.t * 0.4f) * 0.22f
     b.fire -= dt
     if (b.fire > 0f) return
     b.pattern = ((b.t / 3.2f).toInt()) % 3
     when (b.pattern) {
       0 -> {
+        val gun = bossMuzzle(b)
         for (i in -2..2) {
-          shots += Shot(b.centerX() + i * 0.05f, b.y + Boss.BOSS_H, i * 0.08f, 0.32f, false)
+          shots += Shot(gun.x + i * 0.028f, gun.y, i * 0.05f, 0.18f, false)
         }
-        b.fire = 0.55f
+        b.fire = 0.9f
       }
       1 -> {
-        val dx = playerX - b.centerX()
-        val dy = PLAYER_Y - b.centerY()
+        val gun = bossMuzzle(b)
+        val hull = bossSprite(b)
+        val dx = playerX - gun.x
+        val dy = PLAYER_Y - gun.y
         val len = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(0.05f)
-        shots += Shot(b.centerX(), b.y + Boss.BOSS_H * 0.6f, dx / len * 0.28f, dy / len * 0.28f, false)
-        shots += Shot(b.x + 0.06f, b.y + Boss.BOSS_H * 0.5f, -0.05f, 0.34f, false)
-        shots += Shot(b.x + Boss.BOSS_W - 0.06f, b.y + Boss.BOSS_H * 0.5f, 0.05f, 0.34f, false)
-        b.fire = 0.28f
+        shots += Shot(gun.x, gun.y, dx / len * 0.16f, dy / len * 0.16f, false)
+        shots += Shot(hull.x + hull.w * 0.18f, hull.y + hull.h * 0.62f, -0.03f, 0.19f, false)
+        shots += Shot(hull.x + hull.w * 0.82f, hull.y + hull.h * 0.62f, 0.03f, 0.19f, false)
+        b.fire = 0.48f
       }
       else -> {
+        val gun = bossMuzzle(b)
         for (i in 0..5) {
           val a = (i / 5f - 0.5f) * 1.2f
-          shots += Shot(b.centerX(), b.y + Boss.BOSS_H, sin(a) * 0.22f, 0.26f + abs(cos(a)) * 0.08f, false)
+          shots += Shot(gun.x, gun.y, sin(a) * 0.14f, 0.15f + abs(cos(a)) * 0.05f, false)
         }
-        b.fire = 0.7f
+        b.fire = 1.1f
       }
     }
   }
@@ -351,31 +407,31 @@ class World(
       mob.fire -= dt
       when (mob.kind) {
         MobKind.FIGHTER -> {
-          mob.y += 0.16f * dt
-          mob.x += sin(mob.t * 2.2f).toFloat() * 0.04f * dt
+          mob.y += 0.085f * dt
+          mob.x += sin(mob.t * 1.4f) * 0.025f * dt
         }
         MobKind.DIVE -> {
-          mob.y += 0.22f * dt
-          val pull = (playerX - (mob.x + FIGHTER_W / 2f)) * 0.55f * dt
+          mob.y += 0.12f * dt
+          val mw = mobW(mob.kind)
+          val pull = (playerX - (mob.x + mw / 2f)) * 0.32f * dt
           mob.x += pull
         }
         MobKind.BOMBER -> {
-          mob.y += 0.09f * dt
+          mob.y += 0.05f * dt
         }
       }
       if (mob.y > 1.12f) mob.alive = false
       if (mob.fire <= 0f && mob.y > 0.02f && mob.y < 0.72f) {
-        val cx = mob.x + FIGHTER_W / 2f
-        val cy = mob.y + FIGHTER_H
+        val gun = mobMuzzle(mob)
         when (mob.kind) {
-          MobKind.FIGHTER, MobKind.DIVE -> shots += Shot(cx, cy, 0f, 0.34f, false)
+          MobKind.FIGHTER, MobKind.DIVE -> shots += Shot(gun.x, gun.y, 0f, 0.19f, false)
           MobKind.BOMBER -> {
-            shots += Shot(cx, cy, -0.08f, 0.28f, false)
-            shots += Shot(cx, cy, 0f, 0.30f, false)
-            shots += Shot(cx, cy, 0.08f, 0.28f, false)
+            shots += Shot(gun.x, gun.y, -0.05f, 0.16f, false)
+            shots += Shot(gun.x, gun.y, 0f, 0.17f, false)
+            shots += Shot(gun.x, gun.y, 0.05f, 0.16f, false)
           }
         }
-        mob.fire = if (mob.kind == MobKind.BOMBER) 1.3f else 1.1f
+        mob.fire = if (mob.kind == MobKind.BOMBER) 2.1f else 1.8f
       }
     }
     mobs.removeAll { !it.alive }
@@ -394,7 +450,7 @@ class World(
   private fun movePickups(dt: Float) {
     pickups.forEach { p ->
       if (!p.alive) return@forEach
-      p.y += 0.12f * dt
+      p.y += 0.07f * dt
       if (p.y > 1.1f) p.alive = false
     }
     pickups.removeAll { !it.alive }
@@ -402,22 +458,20 @@ class World(
 
   private fun collide() {
     shots.filter { it.alive && it.fromPlayer }.forEach { shot ->
-      val hit = mobs.firstOrNull { it.alive && pointIn(shot.x, shot.y, it.x, it.y, FIGHTER_W, FIGHTER_H) }
+      val hit = mobs.firstOrNull { it.alive && hitsMob(shot.x, shot.y, it) }
       if (hit != null) {
         shot.alive = false
-        hit.hp -= 1
-        if (hit.hp <= 0) killMob(hit)
+        hurtMob(hit, 1)
       } else {
         val b = boss
-        if (b != null && pointIn(shot.x, shot.y, b.x, b.y, Boss.BOSS_W, Boss.BOSS_H)) {
+        if (b != null && !b.dying && hitsBoss(shot.x, shot.y, b)) {
           shot.alive = false
-          b.hp -= 1
-          if (b.hp <= 0) beatBoss()
+          hurtBoss(1)
         }
       }
     }
     pickups.filter { it.alive }.forEach { p ->
-      if (playerOnField() && boxes(playerLeft(), PLAYER_Y, SHIP_W, SHIP_H, p.x, p.y, 0.06f, 0.06f)) {
+      if (playerOnField() && boxes(playerLeft(), PLAYER_Y, SHIP_W, SHIP_H, p.x, p.y, 0.09f, 0.09f)) {
         p.alive = false
         power = (power + 1).coerceAtMost(2)
       }
@@ -425,16 +479,73 @@ class World(
     if (!playerOnField() || invuln > 0f) return
     val px = playerLeft()
     val bolt = shots.firstOrNull { it.alive && !it.fromPlayer && pointIn(it.x, it.y, px + SHIP_W * 0.28f, PLAYER_Y + SHIP_H * 0.12f, SHIP_W * 0.44f, SHIP_H * 0.55f) }
-    val ram = mobs.firstOrNull { it.alive && boxes(px + 0.03f, PLAYER_Y + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, it.x, it.y, FIGHTER_W, FIGHTER_H) }
+    val ram =
+      mobs.firstOrNull {
+        it.alive && ramMob(px + 0.03f, PLAYER_Y + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, it)
+      }
     val bossHit =
       boss?.let { b ->
-        boxes(px + 0.03f, PLAYER_Y + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, b.x, b.y, Boss.BOSS_W, Boss.BOSS_H)
+        !b.dying && ramBoss(px + 0.03f, PLAYER_Y + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, b)
       } == true
     if (bolt != null || ram != null || bossHit) {
       bolt?.alive = false
       ram?.let { killMob(it) }
       hitPlayer()
     }
+  }
+
+  private fun hurtMob(mob: Mob, dmg: Int) {
+    if (!mob.alive) return
+    mob.hp -= dmg
+    mob.hitFlash = 0.14f
+    if (mob.hp <= 0) killMob(mob)
+  }
+
+  private fun hurtBoss(dmg: Int) {
+    val b = boss ?: return
+    if (b.dying) return
+    b.hp -= dmg
+    b.hitFlash = 0.12f
+    if (b.hp <= 0) startBossDeath()
+  }
+
+  private fun startBossDeath() {
+    val b = boss ?: return
+    b.dying = true
+    b.hitFlash = 1.6f
+    b.hp = 0
+    bossDeath = 1.55f
+    deathBoomIn = 0f
+    shots.removeAll { !it.fromPlayer }
+    boom(b.centerX(), b.centerY(), true, 2.1f)
+  }
+
+  private fun tickBossDeath(dt: Float) {
+    val b = boss ?: return
+    if (!b.dying) return
+    b.hitFlash = if (((bossDeath * 22f).toInt() % 2) == 0) 0.2f else 0f
+    deathBoomIn -= dt
+    if (deathBoomIn <= 0f) {
+      val ox = (random.nextFloat() - 0.5f) * Boss.BOSS_W * 0.85f
+      val oy = (random.nextFloat() - 0.5f) * Boss.BOSS_H * 0.9f
+      boom(b.centerX() + ox, b.centerY() + oy, true, 1.5f + random.nextFloat() * 0.8f)
+      deathBoomIn = 0.11f
+    }
+    bossDeath -= dt
+    if (bossDeath <= 0f) finishBossDeath()
+  }
+
+  private fun finishBossDeath() {
+    val b = boss ?: return
+    boom(b.centerX(), b.centerY(), true, 2.4f)
+    boom(b.centerX() - 0.12f, b.centerY() + 0.05f, true, 1.8f)
+    boom(b.centerX() + 0.14f, b.centerY() - 0.04f, true, 1.9f)
+    boom(b.x + 0.08f, b.y + Boss.BOSS_H * 0.4f, true, 1.6f)
+    boom(b.x + Boss.BOSS_W - 0.08f, b.y + Boss.BOSS_H * 0.55f, true, 1.7f)
+    score += 5000
+    boss = null
+    bossDeath = 0f
+    phase = Phase.CLEARED
   }
 
   private fun killMob(mob: Mob) {
@@ -444,19 +555,16 @@ class World(
       MobKind.DIVE -> 150
       MobKind.BOMBER -> 300
     }
-    boom(mob.x + FIGHTER_W / 2f, mob.y + FIGHTER_H / 2f, false)
+    val cx = mob.x + mobW(mob.kind) / 2f
+    val cy = mob.y + mobH(mob.kind) / 2f
+    if (mob.kind == MobKind.BOMBER) {
+      val wing = mobW(MobKind.BOMBER) * 0.38f
+      boom(cx - wing, cy + 0.012f, false, 1.05f)
+      boom(cx + wing, cy + 0.012f, false, 1.05f, wait = 0.07f)
+    } else {
+      boom(cx, cy, false)
+    }
     if (mob.drop) pickups += Pickup(mob.x + 0.02f, mob.y)
-  }
-
-  private fun beatBoss() {
-    val b = boss ?: return
-    boom(b.centerX(), b.centerY(), true)
-    boom(b.centerX() - 0.1f, b.centerY() + 0.04f, true)
-    boom(b.centerX() + 0.1f, b.centerY() - 0.03f, true)
-    score += 5000
-    boss = null
-    shots.removeAll { !it.fromPlayer }
-    phase = Phase.CLEARED
   }
 
   private fun hitPlayer() {
@@ -472,24 +580,109 @@ class World(
     }
   }
 
-  private fun boom(x: Float, y: Float, big: Boolean) {
-    blasts += Blast(x, y, big = big)
+  private fun boom(x: Float, y: Float, big: Boolean, scale: Float = 1f, wait: Float = 0f) {
+    val blast = Blast(x, y, big = big, scale = scale, wait = wait)
+    blasts += blast
+    if (wait <= 0f) cueBoom(blast)
   }
+
+  private fun cueBoom(blast: Blast) {
+    cues += SfxCue(if (blast.big) SfxKind.BOOM_BIG else SfxKind.BOOM, blast.x)
+  }
+
+  private fun hitsMob(px: Float, py: Float, mob: Mob): Boolean {
+    val sprite = mobSprite(mob)
+    return pointIn(px, py, fuseBox(sprite, mob.kind)) || pointIn(px, py, wingBox(sprite, mob.kind))
+  }
+
+  private fun ramMob(px: Float, py: Float, pw: Float, ph: Float, mob: Mob): Boolean {
+    val sprite = mobSprite(mob)
+    return boxes(px, py, pw, ph, fuseBox(sprite, mob.kind)) || boxes(px, py, pw, ph, wingBox(sprite, mob.kind))
+  }
+
+  private fun hitsBoss(px: Float, py: Float, b: Boss): Boolean = pointIn(px, py, bossHurt(b))
+
+  private fun ramBoss(px: Float, py: Float, pw: Float, ph: Float, b: Boss): Boolean = boxes(px, py, pw, ph, bossHurt(b))
+
+  private fun mobMuzzle(mob: Mob): Vec {
+    val sprite = mobSprite(mob)
+    return Vec(sprite.x + sprite.w * 0.5f, sprite.y + sprite.h * 0.97f)
+  }
+
+  private fun bossMuzzle(b: Boss): Vec {
+    val hull = bossSprite(b)
+    return Vec(hull.x + hull.w * 0.5f, hull.y + hull.h * 0.96f)
+  }
+
+  private fun mobSprite(mob: Mob): Box {
+    val artW = if (mob.kind == MobKind.BOMBER) BOMBER_ART_W else FIGHTER_ART_W
+    val artH = if (mob.kind == MobKind.BOMBER) BOMBER_ART_H else FIGHTER_ART_H
+    return fitSprite(mob.x, mob.y, mobW(mob.kind), mobH(mob.kind), artW, artH)
+  }
+
+  private fun bossSprite(b: Boss): Box = fitSprite(b.x, b.y, Boss.BOSS_W, Boss.BOSS_H, BOSS_ART_W, BOSS_ART_H)
+
+  private fun fitSprite(left: Float, top: Float, boxW: Float, boxH: Float, artW: Float, artH: Float): Box {
+    val aspect = viewAspect
+    val drawnW = min(boxW, boxH * (artW / artH) / aspect)
+    val drawnH = min(boxH, boxW * (artH / artW) * aspect)
+    return Box(left + (boxW - drawnW) * 0.5f, top + (boxH - drawnH) * 0.5f, drawnW, drawnH)
+  }
+
+  private fun bossHurt(b: Boss): Box {
+    val hull = bossSprite(b)
+    val ix = hull.w * 0.10f
+    val iy = hull.h * 0.08f
+    return Box(hull.x + ix, hull.y + iy, hull.w - ix * 2f, hull.h - iy * 2f)
+  }
+
+  private fun fuseBox(sprite: Box, kind: MobKind): Box {
+    val frac = if (kind == MobKind.BOMBER) 0.17f else 0.22f
+    val w = sprite.w * frac
+    return Box(sprite.x + (sprite.w - w) * 0.5f, sprite.y, w, sprite.h)
+  }
+
+  private fun wingBox(sprite: Box, kind: MobKind): Box {
+    val top = sprite.y + sprite.h * if (kind == MobKind.BOMBER) 0.27f else 0.30f
+    val h = sprite.h * if (kind == MobKind.BOMBER) 0.36f else 0.30f
+    val inset = sprite.w * 0.03f
+    return Box(sprite.x + inset, top, sprite.w - inset * 2f, h)
+  }
+
+  private fun pointIn(px: Float, py: Float, box: Box): Boolean = pointIn(px, py, box.x, box.y, box.w, box.h)
 
   private fun pointIn(px: Float, py: Float, x: Float, y: Float, w: Float, h: Float): Boolean =
     px >= x && px <= x + w && py >= y && py <= y + h
+
+  private fun boxes(ax: Float, ay: Float, aw: Float, ah: Float, box: Box): Boolean =
+    boxes(ax, ay, aw, ah, box.x, box.y, box.w, box.h)
 
   private fun boxes(ax: Float, ay: Float, aw: Float, ah: Float, bx: Float, by: Float, bw: Float, bh: Float): Boolean =
     ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
 
   companion object {
-    const val SHIP_W = 0.122f
-    const val SHIP_H = 0.108f
-    const val PLAYER_Y = 0.80f
-    const val FIGHTER_W = 0.090f
-    const val FIGHTER_H = 0.078f
+    const val SHIP_W = 0.168f
+    const val SHIP_H = 0.138f
+    const val PLAYER_Y = 0.78f
+    const val FIGHTER_W = 0.118f
+    const val FIGHTER_H = 0.100f
+    const val BOMBER_SCALE = 2.5f
+    private const val FIGHTER_ART_W = 616f
+    private const val FIGHTER_ART_H = 604f
+    private const val BOMBER_ART_W = 1005f
+    private const val BOMBER_ART_H = 768f
+    private const val BOSS_ART_W = 1412f
+    private const val BOSS_ART_H = 964f
+
+    fun mobW(kind: MobKind): Float = if (kind == MobKind.BOMBER) FIGHTER_W * BOMBER_SCALE else FIGHTER_W
+
+    fun mobH(kind: MobKind): Float = if (kind == MobKind.BOMBER) FIGHTER_H * BOMBER_SCALE else FIGHTER_H
   }
 }
+
+private data class Box(val x: Float, val y: Float, val w: Float, val h: Float)
+
+private data class Vec(val x: Float, val y: Float)
 
 private fun cos(a: Float): Float = kotlin.math.cos(a.toDouble()).toFloat()
 private fun abs(v: Float): Float = kotlin.math.abs(v)

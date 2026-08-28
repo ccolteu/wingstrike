@@ -25,6 +25,26 @@ class WorldTest {
   }
 
   @Test
+  fun shotAndBoomEmitSeparateCues() {
+    val world = World(Random(2), bossAt = 99f)
+    world.startOrAdvance()
+    world.movePlayer(0.5f)
+    world.setFiring(true)
+    world.step(0.2f)
+    val first = world.takeCues()
+    assertTrue(first.any { it.kind == SfxKind.SHOT })
+    world.takeCues()
+    world.setFiring(false)
+  }
+
+  @Test
+  fun blastScaleMakesBigBoomsLarger() {
+    val small = Blast(0.5f, 0.5f, big = false)
+    val bomber = Blast(0.5f, 0.5f, big = true, scale = 2.2f)
+    assertTrue(bomber.duration > small.duration)
+  }
+
+  @Test
   fun bossArrivesAfterTheStageClock() {
     val world = World(Random(0), bossAt = 0.35f)
     world.startOrAdvance()
