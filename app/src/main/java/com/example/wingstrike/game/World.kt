@@ -97,6 +97,8 @@ class World(
     private set
   var lives: Int = 3
     private set
+  var playerHp: Int = PLAYER_HITS
+    private set
   var bombs: Int = 3
     private set
   var power: Int = 0
@@ -121,10 +123,13 @@ class World(
     private set
   private var viewAspect = 9f / 16f
 
+  internal fun viewAspect(): Float = viewAspect
+
   fun setViewSize(widthPx: Float, heightPx: Float) {
     if (heightPx > 1f) viewAspect = (widthPx / heightPx).coerceIn(0.35f, 0.85f)
   }
   val mobs: MutableList<Mob> = mutableListOf()
+  val grounds: MutableList<GroundUnit> = mutableListOf()
   val shots: MutableList<Shot> = mutableListOf()
   val pickups: MutableList<Pickup> = mutableListOf()
   val blasts: MutableList<Blast> = mutableListOf()
@@ -166,6 +171,7 @@ class World(
       Phase.READY, Phase.GAME_OVER -> {
         score = 0
         lives = 3
+        playerHp = PLAYER_HITS
         bombs = 3
         power = 0
         playerX = 0.5f
@@ -190,6 +196,9 @@ class World(
     mobs.filter { it.alive }.forEach { mob ->
       hurtMob(mob, 4)
     }
+    grounds.filter { it.alive }.forEach { unit ->
+      hurtGround(unit, 4)
+    }
     boss?.let { b ->
       if (!b.dying) hurtBoss(12)
     }
@@ -211,6 +220,7 @@ class World(
 
   private fun resetStage() {
     mobs.clear()
+    grounds.clear()
     shots.clear()
     pickups.clear()
     blasts.clear()
@@ -228,6 +238,9 @@ class World(
     bossDeath = 0f
     deathBoomIn = 0f
     cues.clear()
+    seedGround()
+    playerHp = PLAYER_HITS
+    invuln = 1.2f
   }
 
   private fun tickFx(dt: Float) {
@@ -246,6 +259,7 @@ class World(
     }
     blasts.removeAll { it.wait <= 0f && it.t >= it.duration }
     mobs.forEach { it.hitFlash = (it.hitFlash - dt).coerceAtLeast(0f) }
+    grounds.forEach { it.hitFlash = (it.hitFlash - dt).coerceAtLeast(0f) }
     boss?.let { it.hitFlash = (it.hitFlash - dt).coerceAtLeast(0f) }
     tickBossDeath(dt)
   }
@@ -256,6 +270,7 @@ class World(
       if (respawnIn == 0f && lives > 0) {
         playerX = 0.5f
         playerY = DEFAULT_PLAYER_Y
+        playerHp = PLAYER_HITS
         invuln = 2.4f
         shots.removeAll { !it.fromPlayer }
       }
@@ -267,6 +282,7 @@ class World(
     scroll += (if (scrolling) 0.055f else 0.014f) * dt
     moveShots(dt)
     moveMobs(dt)
+    moveGround(dt)
     movePickups(dt)
     maybeSpawn(dt)
     maybeBoss()
@@ -294,21 +310,26 @@ class World(
     spawnCool -= dt
     if (spawnCool > 0f) return
     wave += 1
-    when (wave % 4) {
-      1 -> spawnLine()
-      2 -> spawnDive()
-      3 -> spawnBombers()
-      else -> {
+    when (PLANE_WAVES[(wave - 1) % PLANE_WAVES.size]) {
+      PlaneBeat.LINE -> spawnLine()
+      PlaneBeat.DIVE_L -> spawnDive(0.08f)
+      PlaneBeat.DIVE_R -> spawnDive(0.82f)
+      PlaneBeat.BOMBERS -> spawnBombers()
+      PlaneBeat.LINE_DIVE_L -> {
         spawnLine()
-        spawnDive()
+        spawnDive(0.08f)
+      }
+      PlaneBeat.LINE_DIVE_R -> {
+        spawnLine()
+        spawnDive(0.82f)
       }
     }
-    spawnCool = (2.8f - wave * 0.04f).coerceAtLeast(1.8f)
+    spawnCool = (3.5f - wave * 0.04f).coerceAtLeast(2.3f)
   }
 
   private fun spawnLine() {
-    val n = 4
-    val gap = 0.16f
+    val n = 3
+    val gap = 0.18f
     val start = 0.5f - (n - 1) * gap / 2f
     repeat(n) { i ->
       mobs +=
@@ -318,14 +339,13 @@ class World(
           kind = MobKind.FIGHTER,
           hp = 2,
           fire = 0.5f + i * 0.15f,
-          drop = i == n / 2 && random.nextFloat() < 0.45f,
+          drop = i == 1,
         )
     }
   }
 
-  private fun spawnDive() {
-    val side = if (random.nextBoolean()) 0.08f else 0.82f
-    repeat(3) { i ->
+  private fun spawnDive(side: Float) {
+    repeat(2) { i ->
       mobs +=
         Mob(
           x = side,
@@ -338,16 +358,76 @@ class World(
   }
 
   private fun spawnBombers() {
-    repeat(2) { i ->
-      mobs +=
-        Mob(
-          x = 0.12f + i * 0.46f,
-          y = -0.16f,
-          kind = MobKind.BOMBER,
-          hp = 12,
-          fire = 0.6f,
-          drop = true,
-        )
+    mobs +=
+      Mob(
+        x = 0.28f,
+        y = -0.16f,
+        kind = MobKind.BOMBER,
+        hp = 12,
+        fire = 0.6f,
+        drop = true,
+      )
+  }
+
+  private fun seedGround() {
+    STAGE_GROUNDS.forEach { addGround(it, it.u, it.v) }
+    syncGround()
+  }
+
+  private fun addGround(anchor: GroundAnchor, u: Float, v: Float) {
+    grounds +=
+      GroundUnit(
+        mapU = u,
+        mapV = v,
+        kind = anchor.kind,
+        hp = groundHp(anchor.kind),
+        fire = anchor.fire,
+        mapH = anchor.mapH,
+        leftShore = anchor.leftShore,
+        roamA = anchor.roamA,
+        roamB = anchor.roamB,
+        roamSpeed = anchor.roamSpeed,
+      )
+  }
+
+  private fun syncGround() {
+    grounds.forEach { unit ->
+      val gw = groundDrawW(unit)
+      val gh = groundDrawH(unit, viewAspect)
+      val cx = StageMap.screenX(unit.mapU)
+      val cy = StageMap.screenY(unit.mapV, scroll, viewAspect)
+      unit.x =
+        when {
+          unit.kind.isShoreTile() -> if (unit.leftShore) 0f else 1f - gw
+          unit.kind.onLand() -> cx - gw / 2f
+          else -> (cx - gw / 2f).coerceIn(0.02f, 1f - gw - 0.02f)
+        }
+      unit.y = cy - gh / 2f
+    }
+  }
+
+  private fun moveGround(dt: Float) {
+    grounds.forEach { unit ->
+      if (unit.kind != GroundKind.BOAT || unit.roamSpeed == 0f) return@forEach
+      unit.roamT += dt
+      val mid = (unit.roamA + unit.roamB) * 0.5f
+      val span = (unit.roamB - unit.roamA) * 0.5f
+      unit.mapU = mid + span * sin(unit.roamT * unit.roamSpeed)
+    }
+    syncGround()
+    grounds.filter { it.alive }.forEach { unit ->
+      if (!unit.kind.shoots()) return@forEach
+      val onScreen = unit.y > -0.12f && unit.y < 0.88f && unit.x > -0.12f && unit.x < 1.02f
+      if (!onScreen) return@forEach
+      unit.fire -= dt
+      if (unit.fire > 0f) return@forEach
+      val gun = groundMuzzle(unit)
+      val dx = playerX - gun.x
+      val dy = playerY - gun.y
+      val len = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(0.05f)
+      val sp = groundShotSpeed(unit.kind)
+      shots += Shot(gun.x, gun.y, dx / len * sp, dy / len * sp, false)
+      unit.fire = groundFireReload(unit.kind)
     }
   }
 
@@ -468,10 +548,16 @@ class World(
         shot.alive = false
         hurtMob(hit, 1)
       } else {
-        val b = boss
-        if (b != null && !b.dying && hitsBoss(shot.x, shot.y, b)) {
+        val gHit = grounds.firstOrNull { it.alive && hitsGround(shot.x, shot.y, it) }
+        if (gHit != null) {
           shot.alive = false
-          hurtBoss(1)
+          hurtGround(gHit, 1)
+        } else {
+          val b = boss
+          if (b != null && !b.dying && hitsBoss(shot.x, shot.y, b)) {
+            shot.alive = false
+            hurtBoss(1)
+          }
         }
       }
     }
@@ -489,15 +575,42 @@ class World(
       mobs.firstOrNull {
         it.alive && ramMob(px + 0.03f, py + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, it)
       }
+    val ramGround =
+      grounds.firstOrNull {
+        it.alive && ramGround(px + 0.03f, py + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, it)
+      }
     val bossHit =
       boss?.let { b ->
         !b.dying && ramBoss(px + 0.03f, py + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, b)
       } == true
-    if (bolt != null || ram != null || bossHit) {
+    if (bolt != null || ram != null || ramGround != null || bossHit) {
       bolt?.alive = false
       ram?.let { killMob(it) }
-      hitPlayer()
+      ramGround?.let { killGround(it) }
+      if (bolt != null && ram == null && ramGround == null && !bossHit) {
+        chipPlayer()
+      } else {
+        hitPlayer()
+      }
     }
+  }
+
+  private fun hurtGround(unit: GroundUnit, dmg: Int) {
+    if (!unit.alive) return
+    unit.hp -= dmg
+    unit.hitFlash = 0.14f
+    if (unit.hp <= 0) killGround(unit)
+  }
+
+  private fun killGround(unit: GroundUnit) {
+    unit.alive = false
+    score += groundScore(unit.kind)
+    val sprite = groundSprite(unit)
+    boom(
+      sprite.x + sprite.w / 2f,
+      sprite.y + sprite.h / 2f,
+      unit.kind == GroundKind.BATTLESHIP || unit.kind.isShoreTile(),
+    )
   }
 
   private fun hurtMob(mob: Mob, dmg: Int) {
@@ -573,7 +686,14 @@ class World(
     if (mob.drop) pickups += Pickup(mob.x + 0.02f, mob.y)
   }
 
+  private fun chipPlayer() {
+    playerHp -= 1
+    invuln = 0.45f
+    if (playerHp <= 0) hitPlayer()
+  }
+
   private fun hitPlayer() {
+    playerHp = 0
     lives -= 1
     boom(playerX, playerY, true)
     shots.removeAll { !it.fromPlayer }
@@ -594,6 +714,32 @@ class World(
 
   private fun cueBoom(blast: Blast) {
     cues += SfxCue(if (blast.big) SfxKind.BOOM_BIG else SfxKind.BOOM, blast.x)
+  }
+
+  private fun hitsGround(px: Float, py: Float, unit: GroundUnit): Boolean = pointIn(px, py, groundHurt(unit))
+
+  private fun ramGround(px: Float, py: Float, pw: Float, ph: Float, unit: GroundUnit): Boolean = boxes(px, py, pw, ph, groundHurt(unit))
+
+  private fun groundMuzzle(unit: GroundUnit): Vec {
+    val sprite = groundSprite(unit)
+    return Vec(sprite.x + sprite.w * 0.5f, sprite.y + sprite.h * 0.92f)
+  }
+
+  private fun groundSprite(unit: GroundUnit): Box {
+    val gw = groundDrawW(unit)
+    val gh = groundDrawH(unit, viewAspect)
+    return if (unit.kind.isShoreTile()) {
+      Box(unit.x, unit.y, gw, gh)
+    } else {
+      fitSprite(unit.x, unit.y, gw, gh, groundArtW(unit.kind), groundArtH(unit.kind))
+    }
+  }
+
+  private fun groundHurt(unit: GroundUnit): Box {
+    val hull = groundSprite(unit)
+    val ix = hull.w * 0.12f
+    val iy = hull.h * 0.10f
+    return Box(hull.x + ix, hull.y + iy, hull.w - ix * 2f, hull.h - iy * 2f)
   }
 
   private fun hitsMob(px: Float, py: Float, mob: Mob): Boolean {
@@ -667,6 +813,7 @@ class World(
     ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by
 
   companion object {
+    const val PLAYER_HITS = 5
     const val SHIP_W = 0.168f
     const val SHIP_H = 0.138f
     const val DEFAULT_PLAYER_Y = 0.849f
@@ -685,6 +832,27 @@ class World(
     fun mobH(kind: MobKind): Float = if (kind == MobKind.BOMBER) FIGHTER_H * BOMBER_SCALE else FIGHTER_H
   }
 }
+
+private enum class PlaneBeat {
+  LINE,
+  DIVE_L,
+  DIVE_R,
+  BOMBERS,
+  LINE_DIVE_L,
+  LINE_DIVE_R,
+}
+
+private val PLANE_WAVES =
+  listOf(
+    PlaneBeat.LINE,
+    PlaneBeat.DIVE_L,
+    PlaneBeat.BOMBERS,
+    PlaneBeat.LINE_DIVE_R,
+    PlaneBeat.LINE,
+    PlaneBeat.DIVE_R,
+    PlaneBeat.BOMBERS,
+    PlaneBeat.LINE_DIVE_L,
+  )
 
 private data class Box(val x: Float, val y: Float, val w: Float, val h: Float)
 

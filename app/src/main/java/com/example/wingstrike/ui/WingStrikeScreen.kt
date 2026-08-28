@@ -54,6 +54,11 @@ import com.example.wingstrike.game.Boss
 import com.example.wingstrike.game.MobKind
 import com.example.wingstrike.game.Phase
 import com.example.wingstrike.game.World
+import com.example.wingstrike.game.baseLayer
+import com.example.wingstrike.game.flipDrawX
+import com.example.wingstrike.game.groundDrawH
+import com.example.wingstrike.game.groundDrawW
+import com.example.wingstrike.game.onLand
 
 @Composable
 fun WingStrikeScreen() {
@@ -78,7 +83,15 @@ fun WingStrikeScreen() {
     }
   }
   val stageWater = ImageBitmap.imageResource(R.drawable.stage_water)
-  val stageLand = ImageBitmap.imageResource(R.drawable.stage_land)
+  val stageLand =
+    listOf(
+      ImageBitmap.imageResource(R.drawable.stage_land_0),
+      ImageBitmap.imageResource(R.drawable.stage_land_1),
+      ImageBitmap.imageResource(R.drawable.stage_land_2),
+      ImageBitmap.imageResource(R.drawable.stage_land_3),
+      ImageBitmap.imageResource(R.drawable.stage_land_4),
+      ImageBitmap.imageResource(R.drawable.stage_land_5),
+    )
   val shipArt =
     ShipArt(
       player = ImageBitmap.imageResource(R.drawable.spr_player),
@@ -86,6 +99,20 @@ fun WingStrikeScreen() {
       bomber = ImageBitmap.imageResource(R.drawable.spr_bomber),
       boss = ImageBitmap.imageResource(R.drawable.spr_boss),
       power = ImageBitmap.imageResource(R.drawable.spr_power),
+      patrol = ImageBitmap.imageResource(R.drawable.spr_patrol),
+      destroyer = ImageBitmap.imageResource(R.drawable.spr_destroyer),
+      battleship = ImageBitmap.imageResource(R.drawable.spr_battleship),
+      sub = ImageBitmap.imageResource(R.drawable.spr_sub),
+      tank = ImageBitmap.imageResource(R.drawable.spr_tank),
+      cannon = ImageBitmap.imageResource(R.drawable.spr_cannon),
+      barracks = ImageBitmap.imageResource(R.drawable.spr_barracks),
+      bunker = ImageBitmap.imageResource(R.drawable.spr_bunker),
+      dock = ImageBitmap.imageResource(R.drawable.spr_dock),
+      dockSlip = ImageBitmap.imageResource(R.drawable.spr_dock_slip),
+      hangar = ImageBitmap.imageResource(R.drawable.spr_hangar),
+      runway = ImageBitmap.imageResource(R.drawable.spr_runway),
+      yard = ImageBitmap.imageResource(R.drawable.spr_yard),
+      boat = ImageBitmap.imageResource(R.drawable.spr_boat),
     )
   var high by remember { mutableIntStateOf(scores.load()) }
   var frame by remember { mutableIntStateOf(0) }
@@ -152,6 +179,18 @@ fun WingStrikeScreen() {
       val h = size.height
       world.setViewSize(w, h)
       drawStageMap(stageWater, stageLand, world.scroll, w, h, world.bombFlash)
+      world.grounds.filter { it.alive }.sortedBy { if (it.kind.baseLayer()) 0 else if (it.kind.onLand()) 2 else 1 }.forEach { unit ->
+        drawGround(
+          shipArt,
+          unit.kind,
+          unit.x * w,
+          unit.y * h,
+          groundDrawW(unit) * w,
+          groundDrawH(unit, world.viewAspect()) * h,
+          flash = unit.hitFlash > 0f,
+          flipX = unit.flipDrawX(),
+        )
+      }
       world.pickups.filter { it.alive }.forEach { drawPowerChip(shipArt, it.x, it.y, w, h) }
       world.mobs.filter { it.alive }.forEach { mob ->
         val bw = World.mobW(mob.kind)

@@ -9,10 +9,14 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import com.example.wingstrike.game.Blast
+import com.example.wingstrike.game.GroundKind
 import com.example.wingstrike.game.MobKind
+import com.example.wingstrike.game.StageMap
+import com.example.wingstrike.game.isShoreTile
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
@@ -23,42 +27,89 @@ internal class ShipArt(
   val bomber: ImageBitmap,
   val boss: ImageBitmap,
   val power: ImageBitmap,
+  val patrol: ImageBitmap,
+  val destroyer: ImageBitmap,
+  val battleship: ImageBitmap,
+  val sub: ImageBitmap,
+  val tank: ImageBitmap,
+  val cannon: ImageBitmap,
+  val barracks: ImageBitmap,
+  val bunker: ImageBitmap,
+  val dock: ImageBitmap,
+  val dockSlip: ImageBitmap,
+  val hangar: ImageBitmap,
+  val runway: ImageBitmap,
+  val yard: ImageBitmap,
+  val boat: ImageBitmap,
 )
 
 internal fun DrawScope.drawStageMap(
   water: ImageBitmap,
-  land: ImageBitmap,
+  landPanels: List<ImageBitmap>,
   scroll: Float,
   w: Float,
   h: Float,
   bombFlash: Float,
 ) {
-  val zoom = 1.72f
+  val zoom = StageMap.ZOOM
   val dstW = (w * zoom).toInt().coerceAtLeast(1)
-  val dstH = (w * water.height.toFloat() / water.width.toFloat() * zoom).toInt().coerceAtLeast(1)
-  val period = dstH.toFloat()
-  val worldY = scroll * h
-  val off = ((worldY % period) + period) % period
   val ox = ((w - dstW) / 2f).toInt()
-  var sy = off - period
-  while (sy < h + period) {
-    val dst = IntOffset(ox, sy.toInt())
-    val size = IntSize(dstW, dstH)
+  val waterH = (w * water.height.toFloat() / water.width.toFloat() * zoom).coerceAtLeast(1f)
+  val panelH = (w * StageMap.PANEL_H_OVER_W * zoom).coerceAtLeast(1f)
+  val worldY = scroll * h
+  tileLayer(water, worldY, waterH, ox, dstW, h)
+  tileLandPanels(landPanels, worldY, panelH, ox, dstW, h)
+  if (bombFlash > 0f) drawRect(Color.White.copy(alpha = bombFlash * 0.45f))
+}
+
+private fun DrawScope.tileLandPanels(
+  panels: List<ImageBitmap>,
+  worldY: Float,
+  panelH: Float,
+  ox: Int,
+  dstW: Int,
+  viewH: Float,
+) {
+  if (panels.isEmpty()) return
+  val total = panelH * panels.size
+  val off = ((worldY % total) + total) % total
+  for (i in panels.indices) {
+    var sy = off + i * panelH
+    if (sy >= total) sy -= total
     drawImage(
-      image = water,
-      dstOffset = dst,
-      dstSize = size,
+      image = panels[i],
+      dstOffset = IntOffset(ox, sy.toInt()),
+      dstSize = IntSize(dstW, panelH.toInt().coerceAtLeast(1)),
       filterQuality = FilterQuality.Medium,
     )
     drawImage(
-      image = land,
-      dstOffset = dst,
-      dstSize = size,
+      image = panels[i],
+      dstOffset = IntOffset(ox, (sy - total).toInt()),
+      dstSize = IntSize(dstW, panelH.toInt().coerceAtLeast(1)),
+      filterQuality = FilterQuality.Medium,
+    )
+  }
+}
+
+private fun DrawScope.tileLayer(
+  image: ImageBitmap,
+  worldY: Float,
+  period: Float,
+  ox: Int,
+  dstW: Int,
+  viewH: Float,
+) {
+  val off = ((worldY % period) + period) % period
+  var sy = off - period
+  while (sy < viewH + period) {
+    drawImage(
+      image = image,
+      dstOffset = IntOffset(ox, sy.toInt()),
+      dstSize = IntSize(dstW, period.toInt().coerceAtLeast(1)),
       filterQuality = FilterQuality.Medium,
     )
     sy += period
   }
-  if (bombFlash > 0f) drawRect(Color.White.copy(alpha = bombFlash * 0.45f))
 }
 
 private fun DrawScope.drawFitted(
@@ -120,6 +171,74 @@ internal fun DrawScope.drawMob(
   drawFitted(sprite, left, top, width, height, alignTop = false, flash = flash)
 }
 
+internal fun DrawScope.drawGround(
+  art: ShipArt,
+  kind: GroundKind,
+  left: Float,
+  top: Float,
+  width: Float,
+  height: Float,
+  flash: Boolean = false,
+  flipX: Boolean = false,
+) {
+  val sprite =
+    when (kind) {
+      GroundKind.PATROL -> art.patrol
+      GroundKind.DESTROYER -> art.destroyer
+      GroundKind.BATTLESHIP -> art.battleship
+      GroundKind.SUB -> art.sub
+      GroundKind.TANK -> art.tank
+      GroundKind.CANNON -> art.cannon
+      GroundKind.BARRACKS -> art.barracks
+      GroundKind.BUNKER -> art.bunker
+      GroundKind.DOCK -> art.dock
+      GroundKind.DOCK_SLIP -> art.dockSlip
+      GroundKind.HANGAR -> art.hangar
+      GroundKind.RUNWAY -> art.runway
+      GroundKind.YARD -> art.yard
+      GroundKind.BOAT -> art.boat
+    }
+  val stretch = kind.isShoreTile()
+  if (!flipX) {
+    if (stretch) drawStretched(sprite, left, top, width, height, flash) else drawFitted(sprite, left, top, width, height, alignTop = false, flash = flash)
+    return
+  }
+  withTransform({
+    val cx = left + width / 2f
+    val cy = top + height / 2f
+    translate(cx, cy)
+    scale(-1f, 1f)
+    translate(-cx, -cy)
+  }) {
+    if (stretch) drawStretched(sprite, left, top, width, height, flash) else drawFitted(sprite, left, top, width, height, alignTop = false, flash = flash)
+  }
+}
+
+private fun DrawScope.drawStretched(
+  img: ImageBitmap,
+  left: Float,
+  top: Float,
+  width: Float,
+  height: Float,
+  flash: Boolean,
+) {
+  val dw = width.toInt().coerceAtLeast(1)
+  val dh = height.toInt().coerceAtLeast(1)
+  val dst = IntOffset(left.toInt(), top.toInt())
+  val size = IntSize(dw, dh)
+  drawImage(image = img, dstOffset = dst, dstSize = size, filterQuality = FilterQuality.Medium)
+  if (flash) {
+    drawImage(
+      image = img,
+      dstOffset = dst,
+      dstSize = size,
+      alpha = 0.34f,
+      colorFilter = ColorFilter.tint(Color(0xFFFFC060), BlendMode.SrcAtop),
+      filterQuality = FilterQuality.Medium,
+    )
+  }
+}
+
 internal fun DrawScope.drawBoss(art: ShipArt, left: Float, top: Float, width: Float, height: Float, flash: Boolean = false) {
   drawFitted(art.boss, left, top, width, height, alignTop = false, flash = flash)
 }
@@ -148,11 +267,12 @@ internal fun DrawScope.drawAllyShot(x: Float, y: Float, w: Float, h: Float, miss
 }
 
 internal fun DrawScope.drawFoeShot(x: Float, y: Float, w: Float, h: Float) {
-  val px = (w / 110f).coerceAtLeast(2.2f)
+  val r = (w / 70f).coerceAtLeast(3.4f)
   val cx = x * w
   val cy = y * h
-  drawOval(Color(0xAAFFC060), Offset(cx - px * 0.9f, cy - px * 2.2f), Size(px * 1.8f, px * 4.4f))
-  drawOval(Color(0xFFFF8030), Offset(cx - px * 0.5f, cy - px * 1.6f), Size(px, px * 3.2f))
+  oval(Color(0xAAFFC060), cx, cy, r * 2.2f, r * 2.2f)
+  oval(Color(0xFFFF8030), cx, cy, r * 1.45f, r * 1.45f)
+  oval(Color(0xFFFFF0C0), cx, cy, r * 0.7f, r * 0.7f)
 }
 
 internal fun DrawScope.drawPowerChip(art: ShipArt, x: Float, y: Float, w: Float, h: Float) {
