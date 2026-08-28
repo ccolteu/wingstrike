@@ -32,7 +32,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -84,14 +87,17 @@ fun WingStrikeScreen() {
   }
   val stageWater = ImageBitmap.imageResource(R.drawable.stage_water)
   val stageLand =
-    listOf(
-      ImageBitmap.imageResource(R.drawable.stage_land_0),
-      ImageBitmap.imageResource(R.drawable.stage_land_1),
-      ImageBitmap.imageResource(R.drawable.stage_land_2),
-      ImageBitmap.imageResource(R.drawable.stage_land_3),
-      ImageBitmap.imageResource(R.drawable.stage_land_4),
-      ImageBitmap.imageResource(R.drawable.stage_land_5),
-    )
+    remember {
+      val opts = BitmapFactory.Options().apply { inScaled = false }
+      val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.stage_land, opts)
+      val slice = 1536
+      val n = (bmp.height + slice - 1) / slice
+      List(n) { i ->
+        val y = i * slice
+        val h = minOf(slice, bmp.height - y)
+        Bitmap.createBitmap(bmp, 0, y, bmp.width, h).asImageBitmap()
+      }
+    }
   val shipArt =
     ShipArt(
       player = ImageBitmap.imageResource(R.drawable.spr_player),

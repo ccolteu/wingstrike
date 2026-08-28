@@ -55,7 +55,7 @@ internal fun DrawScope.drawStageMap(
   val dstW = (w * zoom).toInt().coerceAtLeast(1)
   val ox = ((w - dstW) / 2f).toInt()
   val waterH = (w * water.height.toFloat() / water.width.toFloat() * zoom).coerceAtLeast(1f)
-  val panelH = (w * StageMap.PANEL_H_OVER_W * zoom).coerceAtLeast(1f)
+  val panelH = (w * (landPanels.first().height.toFloat() / landPanels.first().width.toFloat()) * zoom).coerceAtLeast(1f)
   val worldY = scroll * h
   tileLayer(water, worldY, waterH, ox, dstW, h)
   tileLandPanels(landPanels, worldY, panelH, ox, dstW, h)
@@ -72,23 +72,22 @@ private fun DrawScope.tileLandPanels(
 ) {
   if (panels.isEmpty()) return
   val total = panelH * panels.size
-  val off = ((worldY % total) + total) % total
-  for (i in panels.indices) {
-    var sy = off + i * panelH
-    if (sy >= total) sy -= total
-    drawImage(
-      image = panels[i],
-      dstOffset = IntOffset(ox, sy.toInt()),
-      dstSize = IntSize(dstW, panelH.toInt().coerceAtLeast(1)),
-      filterQuality = FilterQuality.Medium,
-    )
-    drawImage(
-      image = panels[i],
-      dstOffset = IntOffset(ox, (sy - total).toInt()),
-      dstSize = IntSize(dstW, panelH.toInt().coerceAtLeast(1)),
-      filterQuality = FilterQuality.Medium,
-    )
-  }
+    val wrapped = ((worldY % total) + total) % total
+    val base = viewH - total + wrapped
+    for (i in panels.indices) {
+      val sy = base + i * panelH
+      val dh = panelH.toInt().coerceAtLeast(1)
+      for (shift in floatArrayOf(-total, 0f, total)) {
+        val y = sy + shift
+        if (y + panelH < -panelH || y > viewH + panelH) continue
+        drawImage(
+          image = panels[i],
+          dstOffset = IntOffset(ox, y.toInt()),
+          dstSize = IntSize(dstW, dh),
+          filterQuality = FilterQuality.Medium,
+        )
+      }
+    }
 }
 
 private fun DrawScope.tileLayer(
@@ -198,6 +197,16 @@ internal fun DrawScope.drawGround(
       GroundKind.YARD -> art.yard
       GroundKind.BOAT -> art.boat
     }
+  if (kind == GroundKind.PATROL) {
+    val cx = left + width / 2f
+    val cy = top + height / 2f
+    withTransform({
+      rotate(if (flipX) 90f else -90f, pivot = Offset(cx, cy))
+    }) {
+      drawFitted(sprite, cx - height / 2f, cy - width / 2f, height, width, alignTop = false, flash = flash)
+    }
+    return
+  }
   val stretch = kind.isShoreTile()
   if (!flipX) {
     if (stretch) drawStretched(sprite, left, top, width, height, flash) else drawFitted(sprite, left, top, width, height, alignTop = false, flash = flash)

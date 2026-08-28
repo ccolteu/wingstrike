@@ -15,19 +15,20 @@ public final class MakeLoopAssets {
     File assets = new File(args[0]);
     File outDir = new File(args[1]);
     outDir.mkdirs();
-    File landSrc = stitchLandPanels(assets, outDir);
-    if (landSrc == null) landSrc = new File(assets, "stage_land.png");
+    File masterFile = new File(assets, "stage_land_master.png");
+    if (!masterFile.isFile()) masterFile = new File(assets, "stage_land.png");
     BufferedImage land;
     boolean[] waterMask;
-    if (landSrc.isFile()) {
-      File keyed = new File(outDir, "_stage_land_keyed.png");
-      key(landSrc, keyed, true, 0);
-      land = ImageIO.read(keyed);
-      keyed.delete();
-      punchOpenChannel(land);
+    land = buildShoreLoop(assets);
+    if (land != null) {
       waterMask = waterFromAlpha(land);
-      writePanels(land, 1536, outDir);
-      System.out.println("land " + land.getWidth() + "x" + land.getHeight() + " from overlay");
+      ImageIO.write(land, "png", new File(outDir, "stage_land.png"));
+      System.out.println("land " + land.getWidth() + "x" + land.getHeight() + " shore tiles");
+    } else if (masterFile.isFile()) {
+      land = buildLongFromMaster(masterFile);
+      waterMask = waterFromAlpha(land);
+      ImageIO.write(land, "png", new File(outDir, "stage_land.png"));
+      System.out.println("land " + land.getWidth() + "x" + land.getHeight() + " one strip");
     } else {
       int w = 1024;
       int h = 1536;
@@ -37,7 +38,320 @@ public final class MakeLoopAssets {
       System.out.println("land " + w + "x" + h + " transparent");
     }
     writeLandMask(waterMask, land.getWidth(), land.getHeight(), new File(args.length > 2 ? args[2] : "LandMaskData.kt"));
-    new File(outDir, "_stage_land_stitch.png").delete();
+  }
+
+  /**
+   * One painting: identical landing-strip pixels at both ends (circular wrap),
+   * interior of that same painting repeated so the stage lasts past the boss.
+   */
+  private static BufferedImage buildLongFromMaster(File masterFile) throws Exception {
+    File tmp = File.createTempFile("land-key", ".png");
+    key(masterFile, tmp, true, 0);
+    BufferedImage keyed = ImageIO.read(tmp);
+    tmp.delete();
+    BufferedImage master = cover(keyed, 1024, 1536);
+    int capH = 256;
+    int w = master.getWidth();
+    int mh = master.getHeight();
+    for (int y = 0; y < capH; y++) {
+      for (int x = 0; x < w; x++) {
+        master.setRGB(x, mh - capH + y, master.getRGB(x, y));
+      }
+    }
+    int bodyY0 = capH;
+    int bodyH = mh - capH * 2;
+    int panel = 1536;
+    int panels = 8;
+    int longH = panel * panels;
+    BufferedImage out = new BufferedImage(w, longH, BufferedImage.TYPE_INT_ARGB);
+    Graphics2D g = out.createGraphics();
+    g.drawImage(master, 0, 0, w, capH, 0, 0, w, capH, null);
+    int y = capH;
+    while (y < longH - capH) {
+      int chunk = Math.min(bodyH, longH - capH - y);
+      g.drawImage(master, 0, y, w, y + chunk, 0, bodyY0, w, bodyY0 + chunk, null);
+      y += chunk;
+    }
+    g.drawImage(master, 0, longH - capH, w, longH, 0, 0, w, capH, null);
+    g.dispose();
+    return out;
+  }
+
+  /**
+   * Bake yard-scale shore tiles onto the long overlay. Middle ~2/3 stays water so
+   * ships fit; left/right are packed low-altitude bases, not mirrored.
+   */
+  private static BufferedImage buildShoreLoop(File assets) throws Exception {
+    File yard = findAsset(assets, "spr_yard.png");
+    if (yard == null) return null;
+    int w = 1024;
+    int panel = 1536;
+    int panels = 8;
+    int capH = 256;
+    int longH = panel * panels;
+    int shoreW = w / 4;
+    int maxLand = shoreW;
+    BufferedImage out = new BufferedImage(w, longH, BufferedImage.TYPE_INT_ARGB);
+    Graphics2D     g = out.createGraphics();
+    g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+
+    String[] leftNames = {
+      "quay4_berth.png",
+      "quay4_pipes.png",
+      "quay4_shed.png",
+      "quay4_crates.png",
+      "quay4_crane.png",
+    };
+    String[] rightNames = {
+      "quay4_crates.png",
+      "quay4_crane.png",
+      "quay4_shed.png",
+      "quay4_pipes.png",
+      "quay4_berth.png",
+    };
+    int[] yardMean = yardMeanRgb(findAsset(assets, "spr_yard.png"));
+    BufferedImage[] left = loadTiles(assets, leftNames, true, shoreW, yardMean);
+    BufferedImage[] right = loadTiles(assets, rightNames, false, shoreW, yardMean);
+    if (left.length == 0 || right.length == 0) {
+      g.dispose();
+      return null;
+    }
+    g.dispose();
+    stampColumn(out, left, 0, capH, longH - capH, true);
+    stampColumn(out, right, 48, capH, longH - capH, false);
+    g = out.createGraphics();
+
+    File runway = findAsset(assets, "spr_runway.png");
+    if (runway != null) {
+      BufferedImage cap = scaleTo(keyImage(ImageIO.read(runway), false), w, capH);
+      g.drawImage(cap, 0, 0, null);
+      g.drawImage(cap, 0, longH - capH, null);
+    }
+    g.dispose();
+    for (int y = 0; y < capH; y++) {
+      for (int x = 0; x < w; x++) {
+        out.setRGB(x, longH - capH + y, out.getRGB(x, y));
+      }
+    }
+    clipToChannel(out, maxLand);
+    return out;
+  }
+
+  private static BufferedImage[] loadTiles(File assets, String[] names, boolean leftShore, int shoreW, int[] yardMean)
+      throws Exception {
+    java.util.ArrayList<BufferedImage> list = new java.util.ArrayList<>();
+    for (String name : names) {
+      File f = findAsset(assets, name);
+      if (f == null) continue;
+      BufferedImage img = keyImage(ImageIO.read(f), false);
+      eatPinkFringe(img);
+      img = matchTone(img, yardMean);
+      if (img.getWidth() < 8 || img.getHeight() < 8) continue;
+      if (leftShore) img = flipH(img);
+      int dw = shoreW;
+      int dh = Math.max(1, dw * img.getHeight() / img.getWidth());
+      list.add(scaleTo(img, dw, dh));
+      System.out.println("tile " + name + " -> " + dw + "x" + dh + (leftShore ? " L" : " R"));
+    }
+    return list.toArray(new BufferedImage[0]);
+  }
+
+  private static int[] yardMeanRgb(File yard) throws Exception {
+    if (yard == null) return new int[] {139, 125, 98};
+    BufferedImage img = keyImage(ImageIO.read(yard), false);
+    return meanRgb(img);
+  }
+
+  private static int[] meanRgb(BufferedImage img) {
+    long r = 0, g = 0, b = 0, n = 0;
+    for (int y = 0; y < img.getHeight(); y += 2) {
+      for (int x = 0; x < img.getWidth(); x += 2) {
+        int p = img.getRGB(x, y);
+        if (((p >>> 24) & 255) < 16) continue;
+        r += (p >> 16) & 255;
+        g += (p >> 8) & 255;
+        b += p & 255;
+        n++;
+      }
+    }
+    if (n == 0) return new int[] {139, 125, 98};
+    return new int[] {(int) (r / n), (int) (g / n), (int) (b / n)};
+  }
+
+  private static BufferedImage matchTone(BufferedImage img, int[] target) {
+    if (target == null) return img;
+    int[] m = meanRgb(img);
+    int dr = target[0] - m[0];
+    int dg = target[1] - m[1];
+    int db = target[2] - m[2];
+    float k = 0.45f;
+    for (int y = 0; y < img.getHeight(); y++) {
+      for (int x = 0; x < img.getWidth(); x++) {
+        int p = img.getRGB(x, y);
+        int a = (p >>> 24) & 255;
+        if (a < 16) continue;
+        int r = clamp(((p >> 16) & 255) + Math.round(dr * k));
+        int g = clamp(((p >> 8) & 255) + Math.round(dg * k));
+        int b = clamp((p & 255) + Math.round(db * k));
+        img.setRGB(x, y, (a << 24) | (r << 16) | (g << 8) | b);
+      }
+    }
+    return img;
+  }
+
+  private static void stampColumn(
+      BufferedImage out, BufferedImage[] tiles, int yShift, int y0, int y1, boolean left) {
+    int ov = 36;
+    int canvasW = out.getWidth();
+    int y = y0 + (yShift % Math.max(1, tiles[0].getHeight()));
+    int i = 0;
+    while (y < y1) {
+      BufferedImage t = tiles[i++ % tiles.length];
+      int x = left ? 0 : canvasW - t.getWidth();
+      int maxH = Math.min(t.getHeight(), y1 - y);
+      if (maxH <= 0) break;
+      blitBlend(out, t, x, y, maxH, i == 1 ? 0 : ov);
+      y += Math.max(8, t.getHeight() - ov);
+    }
+  }
+
+  private static void blitBlend(BufferedImage dst, BufferedImage src, int x0, int y0, int maxH, int fadeIn) {
+    int w = src.getWidth();
+    int h = Math.min(src.getHeight(), maxH);
+    for (int y = 0; y < h; y++) {
+      float fade = 1f;
+      if (fadeIn > 0 && y < fadeIn) fade = y / (float) fadeIn;
+      for (int x = 0; x < w; x++) {
+        int sp = src.getRGB(x, y);
+        int sa = (sp >>> 24) & 255;
+        if (sa < 8) continue;
+        int dx = x0 + x;
+        int dy = y0 + y;
+        if (dx < 0 || dy < 0 || dx >= dst.getWidth() || dy >= dst.getHeight()) continue;
+        float a = (sa / 255f) * fade;
+        int dp = dst.getRGB(dx, dy);
+        int da = (dp >>> 24) & 255;
+        if (da < 8 || a > 0.97f) {
+          int na = Math.min(255, Math.round(sa * fade));
+          dst.setRGB(dx, dy, (na << 24) | (sp & 0x00ffffff));
+          continue;
+        }
+        float b = 1f - a;
+        int r = Math.round(((sp >> 16) & 255) * a + ((dp >> 16) & 255) * b);
+        int g = Math.round(((sp >> 8) & 255) * a + ((dp >> 8) & 255) * b);
+        int bl = Math.round((sp & 255) * a + (dp & 255) * b);
+        int aa = Math.min(255, Math.round(sa * fade + da * b));
+        dst.setRGB(dx, dy, (aa << 24) | (r << 16) | (g << 8) | bl);
+      }
+    }
+  }
+
+  private static void clipToChannel(BufferedImage land, int maxLand) {
+    int w = land.getWidth();
+    int h = land.getHeight();
+    int capH = 256;
+    for (int y = capH; y < h - capH; y++) {
+      for (int x = maxLand; x < w - maxLand; x++) land.setRGB(x, y, 0);
+    }
+  }
+
+  private static File findAsset(File assets, String name) {
+    File[] roots = {
+      assets,
+      new File(assets, "drawable-nodpi"),
+      new File("app/src/main/res/drawable-nodpi"),
+      new File("tools/shores"),
+      new File(System.getProperty("user.dir"), "app/src/main/res/drawable-nodpi"),
+      new File(System.getProperty("user.dir"), "tools/shores"),
+    };
+    for (File r : roots) {
+      File f = new File(r, name);
+      if (f.isFile()) return f;
+    }
+    return null;
+  }
+
+  private static BufferedImage keyImage(BufferedImage src, boolean keyNearBlack) {
+    BufferedImage argb = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_ARGB);
+    for (int y = 0; y < src.getHeight(); y++) {
+      for (int x = 0; x < src.getWidth(); x++) {
+        int p = src.getRGB(x, y);
+        int a = (p >>> 24) & 255;
+        int r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255;
+        boolean magenta =
+            (r >= 90 && b >= 90 && g <= 160 && Math.min(r, b) - g >= 22)
+                || (r >= 130 && b >= 130 && g <= 130 && r + b - 2 * g >= 80);
+        boolean hole = a < 16 || magenta || (keyNearBlack && r + g + b < 28);
+        argb.setRGB(x, y, hole ? 0 : ((255 << 24) | (p & 0x00ffffff)));
+      }
+    }
+    return argb;
+  }
+
+  private static void eatPinkFringe(BufferedImage img) {
+    int w = img.getWidth();
+    int h = img.getHeight();
+    boolean[] kill = new boolean[w * h];
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        int p = img.getRGB(x, y);
+        int a = (p >>> 24) & 255;
+        if (a < 16) continue;
+        int r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255;
+        boolean pink = r >= 80 && b >= 80 && g <= 170 && Math.min(r, b) - g >= 12;
+        if (!pink) continue;
+        boolean water = false;
+        if (x > 0 && ((img.getRGB(x - 1, y) >>> 24) & 255) < 16) water = true;
+        if (x + 1 < w && ((img.getRGB(x + 1, y) >>> 24) & 255) < 16) water = true;
+        if (y > 0 && ((img.getRGB(x, y - 1) >>> 24) & 255) < 16) water = true;
+        if (y + 1 < h && ((img.getRGB(x, y + 1) >>> 24) & 255) < 16) water = true;
+        if (water) kill[y * w + x] = true;
+      }
+    }
+    for (int i = 0; i < kill.length; i++) {
+      if (kill[i]) img.setRGB(i % w, i / w, 0);
+    }
+  }
+
+  private static BufferedImage cropOpaque(BufferedImage src, int pad) {
+    int minX = src.getWidth(), minY = src.getHeight(), maxX = 0, maxY = 0;
+    for (int y = 0; y < src.getHeight(); y++) {
+      for (int x = 0; x < src.getWidth(); x++) {
+        if (((src.getRGB(x, y) >>> 24) & 255) < 16) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    if (maxX < minX) return src;
+    minX = Math.max(0, minX - pad);
+    minY = Math.max(0, minY - pad);
+    maxX = Math.min(src.getWidth() - 1, maxX + pad);
+    maxY = Math.min(src.getHeight() - 1, maxY + pad);
+    BufferedImage crop = src.getSubimage(minX, minY, maxX - minX + 1, maxY - minY + 1);
+    BufferedImage copy = new BufferedImage(crop.getWidth(), crop.getHeight(), BufferedImage.TYPE_INT_ARGB);
+    Graphics2D gg = copy.createGraphics();
+    gg.drawImage(crop, 0, 0, null);
+    gg.dispose();
+    return copy;
+  }
+
+  private static BufferedImage flipH(BufferedImage src) {
+    BufferedImage out = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_ARGB);
+    Graphics2D g = out.createGraphics();
+    g.drawImage(src, src.getWidth(), 0, 0, src.getHeight(), 0, 0, src.getWidth(), src.getHeight(), null);
+    g.dispose();
+    return out;
+  }
+
+  private static BufferedImage scaleTo(BufferedImage src, int w, int h) {
+    BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+    Graphics2D g = out.createGraphics();
+    g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+    g.drawImage(src, 0, 0, w, h, null);
+    g.dispose();
+    return out;
   }
 
   private static void writePanels(BufferedImage land, int panelH, File outDir) throws Exception {
@@ -104,8 +418,8 @@ public final class MakeLoopAssets {
   private static void punchOpenChannel(BufferedImage land) {
     int w = land.getWidth();
     int h = land.getHeight();
-    int y0 = Math.min(h / 6, 1536 * 2 / 5);
-    int y1 = h - y0;
+    int y0 = 256;
+    int y1 = h - 256;
     int x0 = (int) (w / 6.0 + w * 0.04);
     int x1 = (int) (w * 5.0 / 6.0 - w * 0.04);
     for (int y = y0; y < y1; y++) {

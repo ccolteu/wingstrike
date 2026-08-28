@@ -37,7 +37,7 @@ data class GroundUnit(
 
 object StageMap {
   const val ZOOM = 1f
-  const val LAND_PANELS = 6
+  const val LAND_PANELS = 8
   const val PANEL_H_OVER_W = 1536f / 1024f
   const val TILE_H_OVER_W = PANEL_H_OVER_W * LAND_PANELS
 
@@ -48,7 +48,7 @@ object StageMap {
   fun screenY(mapV: Float, scroll: Float, viewAspect: Float): Float {
     val period = periodN(viewAspect)
     val off = ((scroll % period) + period) % period
-    var y = off + mapV * period
+    var y = 1f - period + off + mapV * period
     val mid = 0.45f
     while (y > mid + period * 0.5f) y -= period
     while (y < mid - period * 0.5f) y += period
@@ -56,8 +56,11 @@ object StageMap {
   }
 }
 
-/** Shared strip width so shore tiles stitch with matching seams. */
-internal const val SHORE_W = 0.26f
+/** Each bank is 1/4 of the screen; close-up tiles fill that strip. */
+internal const val SHORE_W = 0.25f
+
+/** Destroyer length in screen heights. Battleship is twice that. */
+private const val DESTROYER_H = 0.56f
 
 internal fun GroundKind.isShoreTile(): Boolean =
   this == GroundKind.BARRACKS ||
@@ -80,16 +83,18 @@ internal fun GroundKind.shoots(): Boolean =
 
 internal fun GroundKind.baseLayer(): Boolean = isShoreTile()
 
-internal fun groundW(kind: GroundKind): Float =
-  when (kind) {
-    GroundKind.PATROL -> 0.092f
-    GroundKind.DESTROYER -> 0.092f
-    GroundKind.BATTLESHIP -> 0.120f
+internal fun groundW(kind: GroundKind): Float {
+  val artW = groundArtW(kind)
+  val artH = groundArtH(kind)
+  return when (kind) {
+    GroundKind.PATROL -> 0.11f
+    GroundKind.DESTROYER -> DESTROYER_H * artW / artH
+    GroundKind.BATTLESHIP -> (DESTROYER_H * 2f * 0.75f) * artW / artH
     GroundKind.SUB -> groundW(GroundKind.DESTROYER) * 0.7f * 0.66f
     GroundKind.TANK -> 0.080f
     GroundKind.CANNON -> 0.078f
     GroundKind.BUNKER -> 0.095f
-    GroundKind.BOAT -> 0.100f
+    GroundKind.BOAT -> 0.32f
     GroundKind.BARRACKS,
     GroundKind.DOCK,
     GroundKind.DOCK_SLIP,
@@ -98,17 +103,18 @@ internal fun groundW(kind: GroundKind): Float =
     GroundKind.YARD,
     -> SHORE_W
   }
+}
 
 internal fun groundH(kind: GroundKind): Float =
   when (kind) {
-    GroundKind.PATROL -> 0.138f
-    GroundKind.DESTROYER -> 0.220f
-    GroundKind.BATTLESHIP -> 0.340f
+    GroundKind.PATROL -> 0.11f * groundArtW(GroundKind.PATROL) / groundArtH(GroundKind.PATROL)
+    GroundKind.DESTROYER -> DESTROYER_H
+    GroundKind.BATTLESHIP -> DESTROYER_H * 2f * 0.75f
     GroundKind.SUB -> groundH(GroundKind.DESTROYER) * 0.7f * 0.66f
     GroundKind.TANK -> 0.048f
     GroundKind.CANNON -> 0.080f
     GroundKind.BUNKER -> 0.090f
-    GroundKind.BOAT -> 0.067f
+    GroundKind.BOAT -> 0.32f * groundArtH(GroundKind.BOAT) / groundArtW(GroundKind.BOAT)
     GroundKind.BARRACKS -> 0.16f
     GroundKind.DOCK -> 0.30f
     GroundKind.DOCK_SLIP -> 0.24f
@@ -126,7 +132,7 @@ internal fun groundHp(kind: GroundKind): Int =
   when (kind) {
     GroundKind.PATROL -> 3
     GroundKind.DESTROYER -> 8
-    GroundKind.BATTLESHIP -> 16
+    GroundKind.BATTLESHIP -> 64
     GroundKind.SUB -> 6
     GroundKind.TANK -> 5
     GroundKind.CANNON -> 4
@@ -234,18 +240,20 @@ internal data class GroundAnchor(
 )
 
 internal fun GroundUnit.flipDrawX(): Boolean {
-  if (kind == GroundKind.BOAT && roamSpeed != 0f) {
+  if ((kind == GroundKind.PATROL || kind == GroundKind.BOAT) && roamSpeed != 0f) {
     return kotlin.math.cos(roamT * roamSpeed) < 0f
   }
   return kind.isShoreTile() && leftShore
 }
 
-private const val WATER_L = 0.24f
-private const val WATER_R = 0.76f
+internal fun GroundUnit.roams(): Boolean = roamSpeed != 0f && (kind == GroundKind.PATROL || kind == GroundKind.BOAT)
+
+private const val WATER_L = SHORE_W
+private const val WATER_R = 1f - SHORE_W
 
 private fun shoreU(left: Boolean, kind: GroundKind): Float {
   val half = groundW(kind) / 2f
-  val pad = 0.016f
+  val pad = 0.003f
   return if (left) WATER_L + pad + half else WATER_R - pad - half
 }
 
@@ -268,11 +276,7 @@ private val LEFT_ANCHORS =
     GroundKind.DESTROYER,
     GroundKind.SUB,
     GroundKind.DESTROYER,
-    GroundKind.BATTLESHIP,
     GroundKind.SUB,
-    GroundKind.DESTROYER,
-    GroundKind.SUB,
-    GroundKind.BATTLESHIP,
     GroundKind.DESTROYER,
     GroundKind.SUB,
   )
@@ -281,22 +285,20 @@ private val RIGHT_ANCHORS =
   listOf(
     GroundKind.SUB,
     GroundKind.DESTROYER,
-    GroundKind.BATTLESHIP,
-    GroundKind.DESTROYER,
-    GroundKind.SUB,
-    GroundKind.DESTROYER,
-    GroundKind.BATTLESHIP,
     GroundKind.SUB,
     GroundKind.DESTROYER,
     GroundKind.SUB,
+    GroundKind.DESTROYER,
   )
 
 internal val STAGE_GROUNDS: List<GroundAnchor> =
   packShore(left = true, LEFT_ANCHORS) +
     packShore(left = false, RIGHT_ANCHORS) +
     listOf(
-      GroundAnchor(GroundKind.BOAT, 0.38f, 0.16f, 1.2f, roamA = 0.32f, roamB = 0.44f, roamSpeed = 0.55f),
-      GroundAnchor(GroundKind.BOAT, 0.62f, 0.38f, 1.3f, roamA = 0.56f, roamB = 0.68f, roamSpeed = 0.40f),
-      GroundAnchor(GroundKind.BOAT, 0.38f, 0.62f, 1.4f, roamA = 0.32f, roamB = 0.44f, roamSpeed = 0.70f),
-      GroundAnchor(GroundKind.BOAT, 0.62f, 0.82f, 1.2f, roamA = 0.56f, roamB = 0.68f, roamSpeed = 0.48f),
+      GroundAnchor(GroundKind.BATTLESHIP, shoreU(true, GroundKind.BATTLESHIP), 0.88f, groundFireReload(GroundKind.BATTLESHIP) * 0.45f),
+      GroundAnchor(GroundKind.BATTLESHIP, shoreU(false, GroundKind.BATTLESHIP), 0.70f, groundFireReload(GroundKind.BATTLESHIP) * 0.45f),
+      GroundAnchor(GroundKind.PATROL, 0.38f, 0.16f, 1.2f, roamA = 0.30f, roamB = 0.46f, roamSpeed = 0.55f),
+      GroundAnchor(GroundKind.PATROL, 0.62f, 0.38f, 1.3f, roamA = 0.54f, roamB = 0.70f, roamSpeed = 0.40f),
+      GroundAnchor(GroundKind.PATROL, 0.38f, 0.62f, 1.4f, roamA = 0.30f, roamB = 0.46f, roamSpeed = 0.70f),
+      GroundAnchor(GroundKind.PATROL, 0.62f, 0.82f, 1.2f, roamA = 0.54f, roamB = 0.70f, roamSpeed = 0.48f),
     )

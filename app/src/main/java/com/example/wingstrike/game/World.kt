@@ -408,7 +408,7 @@ class World(
 
   private fun moveGround(dt: Float) {
     grounds.forEach { unit ->
-      if (unit.kind != GroundKind.BOAT || unit.roamSpeed == 0f) return@forEach
+      if (!unit.roams()) return@forEach
       unit.roamT += dt
       val mid = (unit.roamA + unit.roamB) * 0.5f
       val span = (unit.roamB - unit.roamA) * 0.5f
@@ -448,6 +448,7 @@ class World(
       if (b.y >= 0.08f) {
         b.y = 0.08f
         b.entered = true
+        b.t = 0f
       }
       return
     }
@@ -504,7 +505,9 @@ class World(
           mob.x += pull
         }
         MobKind.BOMBER -> {
-          mob.y += 0.05f * dt
+          mob.y += 0.11f * dt
+          mob.x += sin(mob.t * 0.85f) * 0.12f * dt
+          mob.x = mob.x.coerceIn(0.06f, 1f - mobW(MobKind.BOMBER) - 0.06f)
         }
       }
       if (mob.y > 1.12f) mob.alive = false
@@ -606,11 +609,22 @@ class World(
     unit.alive = false
     score += groundScore(unit.kind)
     val sprite = groundSprite(unit)
-    boom(
-      sprite.x + sprite.w / 2f,
-      sprite.y + sprite.h / 2f,
-      unit.kind == GroundKind.BATTLESHIP || unit.kind.isShoreTile(),
-    )
+    if (unit.kind == GroundKind.BATTLESHIP) {
+      val cx = sprite.x + sprite.w / 2f
+      val cy = sprite.y + sprite.h / 2f
+      boom(cx, cy, true, 2.5f)
+      boom(cx, cy - sprite.h * 0.34f, true, 1.9f, 0.07f)
+      boom(cx, cy + sprite.h * 0.32f, true, 2.0f, 0.14f)
+      boom(cx - sprite.w * 0.30f, cy - sprite.h * 0.08f, true, 1.7f, 0.20f)
+      boom(cx + sprite.w * 0.30f, cy + sprite.h * 0.10f, true, 1.8f, 0.28f)
+      boom(cx, cy, true, 2.8f, 0.40f)
+    } else {
+      boom(
+        sprite.x + sprite.w / 2f,
+        sprite.y + sprite.h / 2f,
+        unit.kind.isShoreTile(),
+      )
+    }
   }
 
   private fun hurtMob(mob: Mob, dmg: Int) {
@@ -728,7 +742,7 @@ class World(
   private fun groundSprite(unit: GroundUnit): Box {
     val gw = groundDrawW(unit)
     val gh = groundDrawH(unit, viewAspect)
-    return if (unit.kind.isShoreTile()) {
+    return if (unit.kind.isShoreTile() || unit.kind == GroundKind.PATROL) {
       Box(unit.x, unit.y, gw, gh)
     } else {
       fitSprite(unit.x, unit.y, gw, gh, groundArtW(unit.kind), groundArtH(unit.kind))

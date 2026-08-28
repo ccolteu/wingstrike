@@ -65,6 +65,7 @@ class WorldTest {
       if (unit.kind == GroundKind.DESTROYER ||
         unit.kind == GroundKind.SUB ||
         unit.kind == GroundKind.BATTLESHIP ||
+        unit.kind == GroundKind.PATROL ||
         unit.kind == GroundKind.BOAT
       ) {
         return@forEach
@@ -101,14 +102,16 @@ class WorldTest {
     }
     assertTrue(a.grounds.any { it.kind == GroundKind.DESTROYER })
     assertTrue(a.grounds.any { it.kind == GroundKind.SUB })
-    assertTrue(a.grounds.any { it.kind == GroundKind.BATTLESHIP })
-    assertTrue(a.grounds.any { it.kind == GroundKind.BOAT })
+    assertTrue(a.grounds.count { it.kind == GroundKind.BATTLESHIP } >= 2)
+    assertTrue(a.grounds.any { it.kind == GroundKind.PATROL })
+    assertTrue(a.grounds.none { it.kind == GroundKind.BOAT })
     assertTrue(a.grounds.none { it.kind.isShoreTile() })
-    val anchored = a.grounds.filter { it.kind != GroundKind.BOAT }
+    assertEquals(groundH(GroundKind.BATTLESHIP), groundH(GroundKind.DESTROYER) * 1.5f, 0.001f)
+    val anchored = a.grounds.filter { !it.roams() }
     val period = StageMap.periodN(1080f / 1920f)
     anchored.forEach { unit ->
-      assertTrue(unit.mapU > 0.23f)
-      assertTrue(unit.mapU < 0.77f)
+      assertTrue(unit.mapU > 0.25f)
+      assertTrue(unit.mapU < 0.75f)
     }
     for (i in anchored.indices) {
       for (j in i + 1 until anchored.size) {
