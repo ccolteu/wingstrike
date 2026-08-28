@@ -54,4 +54,16 @@ class WorldTest {
     }
     assertTrue(world.boss != null)
   }
+
+  @Test
+  fun playerStaysFullyOnScreen() {
+    val world = World(Random(0))
+    world.startOrAdvance()
+    world.movePlayer(-1f, -1f)
+    assertTrue(world.playerLeft() >= 0f)
+    assertTrue(world.playerTop() >= 0f)
+    world.movePlayer(2f, 2f)
+    assertTrue(world.playerLeft() + World.SHIP_W <= 1.0001f)
+    assertTrue(world.playerTop() + World.SHIP_H <= 1.0001f)
+  }
 }

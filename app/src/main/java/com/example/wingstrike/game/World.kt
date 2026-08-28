@@ -103,6 +103,8 @@ class World(
     private set
   var playerX: Float = 0.5f
     private set
+  var playerY: Float = DEFAULT_PLAYER_Y
+    private set
   var invuln: Float = 0f
     private set
   var respawnIn: Float = 0f
@@ -142,8 +144,9 @@ class World(
   private var bossDeath = 0f
   private var deathBoomIn = 0f
 
-  fun movePlayer(nx: Float) {
+  fun movePlayer(nx: Float, ny: Float = playerY) {
     playerX = nx.coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
+    playerY = ny.coerceIn(SHIP_H / 2f, 1f - SHIP_H / 2f)
   }
 
   fun setFiring(on: Boolean) {
@@ -151,6 +154,8 @@ class World(
   }
 
   fun playerLeft(): Float = playerX - SHIP_W / 2f
+
+  fun playerTop(): Float = playerY - SHIP_H / 2f
 
   fun playerOnField(): Boolean = respawnIn <= 0f && lives > 0
 
@@ -164,6 +169,7 @@ class World(
         bombs = 3
         power = 0
         playerX = 0.5f
+        playerY = DEFAULT_PLAYER_Y
         resetStage()
         phase = Phase.PLAYING
       }
@@ -249,6 +255,7 @@ class World(
       respawnIn = (respawnIn - dt).coerceAtLeast(0f)
       if (respawnIn == 0f && lives > 0) {
         playerX = 0.5f
+        playerY = DEFAULT_PLAYER_Y
         invuln = 2.4f
         shots.removeAll { !it.fromPlayer }
       }
@@ -269,16 +276,13 @@ class World(
 
   private fun tryShot() {
     if (fireCool > 0f) return
-    val y = PLAYER_Y + SHIP_H * 0.06f
-    shots += Shot(playerX - 0.018f, y, 0f, -0.62f, true)
-    shots += Shot(playerX + 0.018f, y, 0f, -0.62f, true)
+    val y = playerTop() + SHIP_H * 0.06f
+    shots += Shot(playerX, y, 0f, -0.62f, true)
     if (power >= 1) {
-      shots += Shot(playerX - 0.042f, y + 0.012f, 0f, -0.48f, true, missile = true)
       shots += Shot(playerX + 0.042f, y + 0.012f, 0f, -0.48f, true, missile = true)
     }
     if (power >= 2) {
       shots += Shot(playerX - 0.055f, y, -0.07f, -0.58f, true)
-      shots += Shot(playerX + 0.055f, y, 0.07f, -0.58f, true)
     }
     fireCool = 0.16f
     cues += SfxCue(SfxKind.SHOT, playerX)
@@ -374,8 +378,8 @@ class World(
     when (b.pattern) {
       0 -> {
         val gun = bossMuzzle(b)
-        for (i in -2..2) {
-          shots += Shot(gun.x + i * 0.028f, gun.y, i * 0.05f, 0.18f, false)
+        for (i in -1..1) {
+          shots += Shot(gun.x + i * 0.04f, gun.y, i * 0.05f, 0.18f, false)
         }
         b.fire = 0.9f
       }
@@ -383,17 +387,20 @@ class World(
         val gun = bossMuzzle(b)
         val hull = bossSprite(b)
         val dx = playerX - gun.x
-        val dy = PLAYER_Y - gun.y
+        val dy = playerY - gun.y
         val len = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(0.05f)
         shots += Shot(gun.x, gun.y, dx / len * 0.16f, dy / len * 0.16f, false)
-        shots += Shot(hull.x + hull.w * 0.18f, hull.y + hull.h * 0.62f, -0.03f, 0.19f, false)
-        shots += Shot(hull.x + hull.w * 0.82f, hull.y + hull.h * 0.62f, 0.03f, 0.19f, false)
+        if (random.nextBoolean()) {
+          shots += Shot(hull.x + hull.w * 0.18f, hull.y + hull.h * 0.62f, -0.03f, 0.19f, false)
+        } else {
+          shots += Shot(hull.x + hull.w * 0.82f, hull.y + hull.h * 0.62f, 0.03f, 0.19f, false)
+        }
         b.fire = 0.48f
       }
       else -> {
         val gun = bossMuzzle(b)
-        for (i in 0..5) {
-          val a = (i / 5f - 0.5f) * 1.2f
+        for (i in 0..2) {
+          val a = (i / 2f - 0.5f) * 1.2f
           shots += Shot(gun.x, gun.y, sin(a) * 0.14f, 0.15f + abs(cos(a)) * 0.05f, false)
         }
         b.fire = 1.1f
@@ -426,12 +433,10 @@ class World(
         when (mob.kind) {
           MobKind.FIGHTER, MobKind.DIVE -> shots += Shot(gun.x, gun.y, 0f, 0.19f, false)
           MobKind.BOMBER -> {
-            shots += Shot(gun.x, gun.y, -0.05f, 0.16f, false)
             shots += Shot(gun.x, gun.y, 0f, 0.17f, false)
-            shots += Shot(gun.x, gun.y, 0.05f, 0.16f, false)
           }
         }
-        mob.fire = if (mob.kind == MobKind.BOMBER) 2.1f else 1.8f
+        mob.fire = if (mob.kind == MobKind.BOMBER) 2.1f else 3.6f
       }
     }
     mobs.removeAll { !it.alive }
@@ -471,21 +476,22 @@ class World(
       }
     }
     pickups.filter { it.alive }.forEach { p ->
-      if (playerOnField() && boxes(playerLeft(), PLAYER_Y, SHIP_W, SHIP_H, p.x, p.y, 0.09f, 0.09f)) {
+      if (playerOnField() && boxes(playerLeft(), playerTop(), SHIP_W, SHIP_H, p.x, p.y, 0.09f, 0.09f)) {
         p.alive = false
         power = (power + 1).coerceAtMost(2)
       }
     }
     if (!playerOnField() || invuln > 0f) return
     val px = playerLeft()
-    val bolt = shots.firstOrNull { it.alive && !it.fromPlayer && pointIn(it.x, it.y, px + SHIP_W * 0.28f, PLAYER_Y + SHIP_H * 0.12f, SHIP_W * 0.44f, SHIP_H * 0.55f) }
+    val py = playerTop()
+    val bolt = shots.firstOrNull { it.alive && !it.fromPlayer && pointIn(it.x, it.y, px + SHIP_W * 0.28f, py + SHIP_H * 0.12f, SHIP_W * 0.44f, SHIP_H * 0.55f) }
     val ram =
       mobs.firstOrNull {
-        it.alive && ramMob(px + 0.03f, PLAYER_Y + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, it)
+        it.alive && ramMob(px + 0.03f, py + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, it)
       }
     val bossHit =
       boss?.let { b ->
-        !b.dying && ramBoss(px + 0.03f, PLAYER_Y + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, b)
+        !b.dying && ramBoss(px + 0.03f, py + 0.02f, SHIP_W - 0.06f, SHIP_H - 0.04f, b)
       } == true
     if (bolt != null || ram != null || bossHit) {
       bolt?.alive = false
@@ -569,7 +575,7 @@ class World(
 
   private fun hitPlayer() {
     lives -= 1
-    boom(playerX, PLAYER_Y + SHIP_H * 0.4f, true)
+    boom(playerX, playerY, true)
     shots.removeAll { !it.fromPlayer }
     power = (power - 1).coerceAtLeast(0)
     if (lives <= 0) {
@@ -663,7 +669,7 @@ class World(
   companion object {
     const val SHIP_W = 0.168f
     const val SHIP_H = 0.138f
-    const val PLAYER_Y = 0.78f
+    const val DEFAULT_PLAYER_Y = 0.849f
     const val FIGHTER_W = 0.118f
     const val FIGHTER_H = 0.100f
     const val BOMBER_SCALE = 2.5f

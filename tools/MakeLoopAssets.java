@@ -19,26 +19,16 @@ public final class MakeLoopAssets {
     int w = scene.getWidth();
     int h = scene.getHeight();
     int[] waterRgb = waterMedian(scene);
-    BufferedImage waterLayer = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
-    for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-        waterLayer.setRGB(x, y, water(x, y, w, h));
-      }
-    }
     boolean[] waterMask = floodWater(scene, waterRgb);
     keepOnlySolidLand(waterMask, scene, waterRgb, w, h);
-    BufferedImage land = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-    for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-        int p = scene.getRGB(x, y) & 0xffffff;
-        int a = waterMask[y * w + x] ? 0 : 255;
-        land.setRGB(x, y, (a << 24) | p);
-      }
-    }
-    ImageIO.write(waterLayer, "png", new File(outDir, "stage_water.png"));
+    smoothContour(waterMask, w, h);
+    float[] cx = new float[2];
+    float[] cy = new float[2];
+    landCentroids(waterMask, w, h, cx, cy);
+    BufferedImage land = paintLand(scene, waterMask, w, h, cx, cy);
     ImageIO.write(land, "png", new File(outDir, "stage_land.png"));
     key(new File(assets, "spr_power.png"), new File(outDir, "spr_power.png"));
-    System.out.println("layers " + w + "x" + h + " water=" + waterRgb[0] + "," + waterRgb[1] + "," + waterRgb[2]);
+    System.out.println("land " + w + "x" + h);
   }
 
   private static int water(int x, int y, int w, int h) {
@@ -171,6 +161,117 @@ public final class MakeLoopAssets {
       if (keep) continue;
       for (int k = 0; k < n; k++) water[blob[k]] = true;
     }
+  }
+
+  private static void smoothContour(boolean[] water, int w, int h) {
+    float[] mass = new float[w * h];
+    for (int i = 0; i < water.length; i++) mass[i] = water[i] ? 0f : 1f;
+    float[] blur = boxBlur(mass, w, h, 6);
+    for (int i = 0; i < water.length; i++) water[i] = blur[i] < 0.5f;
+  }
+
+  private static float[] boxBlur(float[] src, int w, int h, int radius) {
+    float[] tmp = new float[w * h];
+    float[] dst = new float[w * h];
+    int span = radius * 2 + 1;
+    for (int y = 0; y < h; y++) {
+      float acc = 0;
+      for (int x = -radius; x <= radius; x++) acc += src[y * w + clampi(x, 0, w - 1)];
+      for (int x = 0; x < w; x++) {
+        tmp[y * w + x] = acc / span;
+        acc -= src[y * w + clampi(x - radius, 0, w - 1)];
+        acc += src[y * w + clampi(x + radius + 1, 0, w - 1)];
+      }
+    }
+    for (int x = 0; x < w; x++) {
+      float acc = 0;
+      for (int y = -radius; y <= radius; y++) acc += tmp[clampi(y, 0, h - 1) * w + x];
+      for (int y = 0; y < h; y++) {
+        dst[y * w + x] = acc / span;
+        acc -= tmp[clampi(y - radius, 0, h - 1) * w + x];
+        acc += tmp[clampi(y + radius + 1, 0, h - 1) * w + x];
+      }
+    }
+    return dst;
+  }
+
+  private static void landCentroids(boolean[] water, int w, int h, float[] cx, float[] cy) {
+    long[] sx = new long[2], sy = new long[2], n = new long[2];
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        if (water[y * w + x]) continue;
+        int s = x < w / 2 ? 0 : 1;
+        sx[s] += x;
+        sy[s] += y;
+        n[s]++;
+      }
+    }
+    for (int s = 0; s < 2; s++) {
+      cx[s] = n[s] == 0 ? (s == 0 ? w * 0.2f : w * 0.8f) : sx[s] / (float) n[s];
+      cy[s] = n[s] == 0 ? h * 0.5f : sy[s] / (float) n[s];
+    }
+  }
+
+  private static boolean isShipPaint(int p) {
+    int r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255;
+    int max = Math.max(r, Math.max(g, b));
+    int min = Math.min(r, Math.min(g, b));
+    return max - min < 28 && max > 58 && g - r < 18 && r > 48;
+  }
+
+  private static BufferedImage paintLand(
+      BufferedImage scene, boolean[] water, int w, int h, float[] cx, float[] cy) {
+    float zoom = 1.72f;
+    BufferedImage land = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        if (water[y * w + x]) {
+          land.setRGB(x, y, 0);
+          continue;
+        }
+        int src = scene.getRGB(x, y);
+        if (!isShipPaint(src)) {
+          int side = x < w / 2 ? 0 : 1;
+          float sx = cx[side] + (x - cx[side]) / zoom;
+          float sy = cy[side] + (y - cy[side]) / zoom;
+          int ix = Math.round(sx);
+          int iy = Math.round(sy);
+          if (ix >= 0 && iy >= 0 && ix < w && iy < h && !water[iy * w + ix]) {
+            src = sample(scene, sx, sy);
+          }
+        }
+        land.setRGB(x, y, 0xff000000 | (src & 0xffffff));
+      }
+    }
+    return land;
+  }
+
+  private static int sample(BufferedImage im, float x, float y) {
+    int w = im.getWidth();
+    int h = im.getHeight();
+    int x0 = clampi((int) Math.floor(x), 0, w - 1);
+    int y0 = clampi((int) Math.floor(y), 0, h - 1);
+    int x1 = clampi(x0 + 1, 0, w - 1);
+    int y1 = clampi(y0 + 1, 0, h - 1);
+    float fx = x - (int) Math.floor(x);
+    float fy = y - (int) Math.floor(y);
+    int a = im.getRGB(x0, y0);
+    int b = im.getRGB(x1, y0);
+    int c = im.getRGB(x0, y1);
+    int d = im.getRGB(x1, y1);
+    return (lerpChan(a, b, c, d, fx, fy, 16) << 16)
+        | (lerpChan(a, b, c, d, fx, fy, 8) << 8)
+        | lerpChan(a, b, c, d, fx, fy, 0);
+  }
+
+  private static int lerpChan(int a, int b, int c, int d, float fx, float fy, int shift) {
+    float p = ((a >> shift) & 255) * (1 - fx) + ((b >> shift) & 255) * fx;
+    float q = ((c >> shift) & 255) * (1 - fx) + ((d >> shift) & 255) * fx;
+    return clamp((int) (p * (1 - fy) + q * fy + 0.5f));
+  }
+
+  private static int clampi(int v, int lo, int hi) {
+    return Math.max(lo, Math.min(hi, v));
   }
 
   private static int dist2(int p, int[] med) {

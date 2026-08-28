@@ -134,12 +134,12 @@ fun WingStrikeScreen() {
                 } while (event.changes.any { it.pressed })
                 return@awaitEachGesture
               }
-              world.movePlayer((down.position.x / size.width).coerceIn(0f, 1f))
+              world.movePlayer((down.position.x / size.width), (down.position.y / size.height))
               world.setFiring(true)
               while (true) {
                 val event = awaitPointerEvent()
                 val change = event.changes.first()
-                world.movePlayer((change.position.x / size.width).coerceIn(0f, 1f))
+                world.movePlayer((change.position.x / size.width), (change.position.y / size.height))
                 change.consume()
                 if (event.changes.none { it.pressed }) break
               }
@@ -165,7 +165,7 @@ fun WingStrikeScreen() {
       world.blasts.filter { it.visible }.forEach { drawBlast(it, w, h) }
       val show = world.playerOnField() && (!world.playerFlashing() || tick % 8 < 5)
       if (show) {
-        drawPlayerPlane(shipArt, world.playerLeft() * w, World.PLAYER_Y * h, World.SHIP_W * w, World.SHIP_H * h)
+        drawPlayerPlane(shipArt, world.playerLeft() * w, world.playerTop() * h, World.SHIP_W * w, World.SHIP_H * h)
       }
       world.shots.filter { it.alive && it.fromPlayer }.forEach { drawAllyShot(it.x, it.y, w, h, it.missile) }
     }
