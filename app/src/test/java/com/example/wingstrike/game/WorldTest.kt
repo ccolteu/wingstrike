@@ -127,16 +127,64 @@ class WorldTest {
   }
 
   @Test
-  fun planeWavesAreScripted() {
-    val world = World(Random(7), bossAt = 99f)
-    world.startOrAdvance()
+  fun fighterFormationsAreFiveAndRepeat() {
+    val a = World(Random(1), bossAt = 99f)
+    val b = World(Random(99), bossAt = 99f)
+    a.startOrAdvance()
+    b.startOrAdvance()
     var guard = 0
-    while (world.mobs.none { it.kind == MobKind.DIVE } && guard++ < 400) {
+    while (a.mobs.count { it.kind == MobKind.FIGHTER } < 5 && guard++ < 200) {
+      a.step(1f / 60f)
+      b.step(1f / 60f)
+    }
+    val fa = a.mobs.filter { it.kind == MobKind.FIGHTER }
+    val fb = b.mobs.filter { it.kind == MobKind.FIGHTER }
+    assertEquals(5, fa.size)
+    assertEquals(5, fb.size)
+    fa.zip(fb).forEach { (l, r) ->
+      assertEquals(l.form, r.form)
+      assertEquals(l.slot, r.slot)
+      assertEquals(l.x, r.x, 0.0001f)
+      assertEquals(l.y, r.y, 0.0001f)
+    }
+    repeat(800) {
+      a.step(1f / 60f)
+      b.step(1f / 60f)
+    }
+    val later = a.mobs.filter { it.kind == MobKind.FIGHTER }
+    if (later.size == 5) {
+      later.zip(b.mobs.filter { it.kind == MobKind.FIGHTER }).forEach { (l, r) ->
+        assertEquals(l.form, r.form)
+        assertEquals(l.x, r.x, 0.0001f)
+        assertEquals(l.y, r.y, 0.0001f)
+      }
+    }
+  }
+
+  @Test
+  fun demoPilotHuntsFighters() {
+    val world = World(Random(0), bossAt = 0.08f)
+    world.setViewSize(1080f, 1920f)
+    repeat(300) { world.step(1f / 60f) }
+    assertEquals(Phase.DEMO, world.phase)
+    var guard = 0
+    while (world.boss == null && guard++ < 200) {
       world.step(1f / 60f)
     }
-    val dives = world.mobs.filter { it.kind == MobKind.DIVE }
-    assertTrue(dives.isNotEmpty())
-    assertTrue(dives.all { kotlin.math.abs(it.x - 0.08f) < 0.001f })
+    world.mobs.clear()
+    world.shots.removeAll { !it.fromPlayer }
+    world.mobs +=
+      Mob(
+        x = 0.78f - World.FIGHTER_W / 2f,
+        y = 0.28f,
+        kind = MobKind.FIGHTER,
+        hp = 99,
+        fire = 99f,
+        form = Forms.NONE,
+      )
+    world.movePlayer(0.22f, World.DEFAULT_PLAYER_Y)
+    repeat(100) { world.step(1f / 60f) }
+    assertTrue(kotlin.math.abs(world.playerX - 0.78f) < 0.16f)
   }
 
   @Test
@@ -149,6 +197,23 @@ class WorldTest {
     world.movePlayer(2f, 2f)
     assertTrue(world.playerLeft() + World.SHIP_W <= 1.0001f)
     assertTrue(world.playerTop() + World.SHIP_H <= 1.0001f)
+  }
+
+  @Test
+  fun powerChipNeedsThePlaneOverIt() {
+    val world = World(Random(0), bossAt = 99f)
+    world.setViewSize(1080f, 1920f)
+    world.startOrAdvance()
+    world.movePlayer(0.5f, 0.55f)
+    world.pickups += Pickup(world.playerLeft() + World.SHIP_W - 0.02f, world.playerTop())
+    world.step(1f / 60f)
+    assertTrue(world.pickups.any { it.alive })
+    assertEquals(0, world.power)
+    world.pickups.clear()
+    world.pickups += Pickup(world.playerX - World.PICKUP_DRAW * 0.5f, world.playerY - World.PICKUP_DRAW * 0.15f)
+    world.step(1f / 60f)
+    assertTrue(world.pickups.none { it.alive })
+    assertEquals(1, world.power)
   }
 
   @Test
@@ -175,5 +240,31 @@ class WorldTest {
     world.shots += Shot(world.playerX, world.playerY, 0f, 0f, fromPlayer = false)
     world.step(1f / 60f)
     assertEquals(2, world.lives)
+  }
+
+  @Test
+  fun insertCoinThenStartBeginsPlay() {
+    val world = World(Random(0))
+    world.pressStart()
+    assertEquals(Phase.READY, world.phase)
+    world.insertCoin()
+    assertEquals(1, world.credits)
+    world.pressStart()
+    assertEquals(Phase.PLAYING, world.phase)
+    assertEquals(0, world.credits)
+  }
+
+  @Test
+  fun idleTitleEntersDemoAndTapReturns() {
+    val world = World(Random(0), bossAt = 99f)
+    world.setViewSize(1080f, 1920f)
+    repeat(300) { world.step(1f / 60f) }
+    assertEquals(Phase.DEMO, world.phase)
+    val lives = world.lives
+    repeat(180) { world.step(1f / 60f) }
+    assertEquals(Phase.DEMO, world.phase)
+    assertEquals(lives, world.lives)
+    world.exitDemo()
+    assertEquals(Phase.READY, world.phase)
   }
 }

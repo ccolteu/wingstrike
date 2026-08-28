@@ -131,8 +131,8 @@ fun WingStrikeScreen() {
         last = now
         world.step(dt)
         audio.playCues(world.takeCues())
-        audio.setStageMusic(world.phase == Phase.PLAYING || world.phase == Phase.CLEARED)
-        if (world.score > high) {
+        audio.setStageMusic(world.phase == Phase.PLAYING || world.phase == Phase.DEMO || world.phase == Phase.CLEARED)
+        if (world.phase != Phase.DEMO && world.score > high) {
           high = world.score
           scores.save(high)
         }
@@ -158,10 +158,22 @@ fun WingStrikeScreen() {
           .pointerInput(Unit) {
             awaitEachGesture {
               val down = awaitFirstDown()
-              if (world.phase == Phase.CLEARED || world.phase == Phase.READY || world.phase == Phase.GAME_OVER) {
-                if (world.phase != Phase.READY && world.phase != Phase.GAME_OVER) {
-                  world.startOrAdvance()
-                }
+              if (world.phase == Phase.DEMO) {
+                world.exitDemo()
+                do {
+                  val event = awaitPointerEvent()
+                } while (event.changes.any { it.pressed })
+                return@awaitEachGesture
+              }
+              if (world.phase == Phase.READY) {
+                world.pingAttract()
+                do {
+                  val event = awaitPointerEvent()
+                } while (event.changes.any { it.pressed })
+                return@awaitEachGesture
+              }
+              if (world.phase == Phase.CLEARED || world.phase == Phase.GAME_OVER) {
+                if (world.phase == Phase.CLEARED) world.startOrAdvance()
                 do {
                   val event = awaitPointerEvent()
                 } while (event.changes.any { it.pressed })
@@ -208,7 +220,8 @@ fun WingStrikeScreen() {
       }
       world.shots.filter { it.alive && !it.fromPlayer }.forEach { drawFoeShot(it.x, it.y, w, h) }
       world.blasts.filter { it.visible }.forEach { drawBlast(it, w, h) }
-      val show = world.playerOnField() && (!world.playerFlashing() || tick % 8 < 5)
+      val show = world.phase != Phase.READY && world.phase != Phase.GAME_OVER &&
+        world.playerOnField() && (!world.playerFlashing() || tick % 8 < 5)
       if (show) {
         drawPlayerPlane(shipArt, world.playerLeft() * w, world.playerTop() * h, World.SHIP_W * w, World.SHIP_H * h)
       }
@@ -274,13 +287,21 @@ fun WingStrikeScreen() {
       }
     }
     Arcade(
-      "CREDIT 0",
+      "CREDIT ${world.credits}",
       Color.White,
       14,
       modifier = Modifier.align(Alignment.BottomEnd).padding(end = 88.dp, bottom = 12.dp),
     )
 
-    if (world.warning > 0f && world.phase == Phase.PLAYING) {
+    if (world.phase == Phase.DEMO && tick % 40 < 24) {
+      Arcade(
+        "DEMO",
+        Danger,
+        22,
+        modifier = Modifier.align(Alignment.TopCenter).padding(top = 36.dp),
+      )
+    }
+    if (world.warning > 0f && (world.phase == Phase.PLAYING || world.phase == Phase.DEMO)) {
       Text(
         "WARNING\nBOSS APPROACHING",
         color = Danger,
@@ -295,7 +316,7 @@ fun WingStrikeScreen() {
       )
     }
     when (world.phase) {
-      Phase.READY, Phase.GAME_OVER -> {
+      Phase.READY -> {
         Column(
           modifier =
             Modifier
@@ -305,17 +326,69 @@ fun WingStrikeScreen() {
               .padding(horizontal = 18.dp, vertical = 16.dp),
           horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-          Text(if (world.phase == Phase.GAME_OVER) "GAME OVER" else "WING STRIKE", color = Gold, fontWeight = FontWeight.Black, fontSize = 24.sp)
-          Text("1945  •  HOLD TO FLY & FIRE", color = Cream, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
+          Text("WING STRIKE", color = Gold, fontWeight = FontWeight.Black, fontSize = 24.sp)
+          Text("1945  •  HOLD TO FLY & FIRE", color = Cream, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp, bottom = 14.dp))
+          if (tick % 50 < 32) {
+            Text(
+              "INSERT COIN",
+              color = Gold,
+              fontWeight = FontWeight.Black,
+              fontSize = 18.sp,
+              modifier =
+                Modifier
+                  .border(1.dp, Gold, RoundedCornerShape(6.dp))
+                  .clickable { world.insertCoin() }
+                  .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+          } else {
+            Text(
+              "INSERT COIN",
+              color = Color.Transparent,
+              fontWeight = FontWeight.Black,
+              fontSize = 18.sp,
+              modifier =
+                Modifier
+                  .clickable { world.insertCoin() }
+                  .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+          }
           Text(
-            if (world.phase == Phase.GAME_OVER) "TAP TO RESTART" else "TAP TO START",
+            "START",
+            color = if (world.credits > 0) Gold else Mute,
+            fontWeight = FontWeight.Black,
+            fontSize = 16.sp,
+            modifier =
+              Modifier
+                .padding(top = 12.dp)
+                .border(1.dp, if (world.credits > 0) Gold else Mute, RoundedCornerShape(6.dp))
+                .clickable(enabled = world.credits > 0) { world.pressStart() }
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+          )
+        }
+      }
+      Phase.GAME_OVER -> {
+        Column(
+          modifier =
+            Modifier
+              .align(Alignment.Center)
+              .background(Color(0xF2080A14), RoundedCornerShape(8.dp))
+              .border(2.dp, Gold, RoundedCornerShape(8.dp))
+              .padding(horizontal = 18.dp, vertical = 16.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+          Text("GAME OVER", color = Gold, fontWeight = FontWeight.Black, fontSize = 24.sp)
+          Text(
+            "TAP TO CONTINUE",
             color = Gold,
             fontWeight = FontWeight.Black,
             fontSize = 16.sp,
             modifier =
               Modifier
+                .padding(top = 12.dp)
                 .border(1.dp, Gold, RoundedCornerShape(6.dp))
-                .clickable { world.startOrAdvance() }
+                .clickable {
+                  world.exitToTitle()
+                }
                 .padding(horizontal = 16.dp, vertical = 8.dp),
           )
         }
@@ -336,7 +409,8 @@ fun WingStrikeScreen() {
               .padding(18.dp),
         )
       }
-      Phase.PLAYING -> {
+      Phase.PLAYING, Phase.DEMO -> {
+        if (world.phase == Phase.PLAYING) {
         Column(
           modifier =
             Modifier
@@ -354,6 +428,7 @@ fun WingStrikeScreen() {
                 .background(Color(0xFF1A3060), RoundedCornerShape(5.dp))
                 .border(1.dp, Color(0xFF80A0D0), RoundedCornerShape(5.dp)),
           )
+        }
         }
       }
     }

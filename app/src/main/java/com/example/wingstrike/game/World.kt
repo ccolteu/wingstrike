@@ -1,11 +1,14 @@
 package com.example.wingstrike.game
 
+import kotlin.math.PI
+import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.random.Random
 
 enum class Phase {
   READY,
+  DEMO,
   PLAYING,
   CLEARED,
   GAME_OVER,
@@ -37,6 +40,8 @@ data class Mob(
   var alive: Boolean = true,
   var drop: Boolean = false,
   var hitFlash: Float = 0f,
+  var form: Int = Forms.NONE,
+  var slot: Int = 0,
 )
 
 data class Pickup(var x: Float, var y: Float, var alive: Boolean = true)
@@ -143,6 +148,15 @@ class World(
   }
 
   private var wantFire = false
+  var credits: Int = 0
+    private set
+  private var idleT = 0f
+  private var demoAimX = 0.5f
+  private var demoAimY = DEFAULT_PLAYER_Y
+  private var demoVx = 0f
+  private var demoVy = 0f
+  private var demoPrey: Mob? = null
+  private var demoGroundPrey: GroundUnit? = null
   private var fireCool = 0f
   private var spawnCool = 0.6f
   private var wave = 0
@@ -158,6 +172,45 @@ class World(
     wantFire = on
   }
 
+  fun pingAttract() {
+    if (phase == Phase.READY) idleT = 0f
+  }
+
+  fun insertCoin() {
+    if (phase == Phase.DEMO) {
+      exitDemo()
+      return
+    }
+    if (phase == Phase.READY || phase == Phase.GAME_OVER) {
+      credits++
+      idleT = 0f
+    }
+  }
+
+  fun pressStart() {
+    if (phase == Phase.DEMO) {
+      exitDemo()
+      return
+    }
+    if ((phase == Phase.READY || phase == Phase.GAME_OVER) && credits > 0) {
+      credits--
+      beginPlay()
+    }
+  }
+
+  fun exitDemo() {
+    if (phase != Phase.DEMO) return
+    exitToTitle()
+  }
+
+  fun exitToTitle() {
+    if (phase != Phase.GAME_OVER && phase != Phase.DEMO) return
+    phase = Phase.READY
+    idleT = 0f
+    wantFire = false
+    resetStage()
+  }
+
   fun playerLeft(): Float = playerX - SHIP_W / 2f
 
   fun playerTop(): Float = playerY - SHIP_H / 2f
@@ -168,23 +221,45 @@ class World(
 
   fun startOrAdvance() {
     when (phase) {
-      Phase.READY, Phase.GAME_OVER -> {
-        score = 0
-        lives = 3
-        playerHp = PLAYER_HITS
-        bombs = 3
-        power = 0
-        playerX = 0.5f
-        playerY = DEFAULT_PLAYER_Y
-        resetStage()
-        phase = Phase.PLAYING
-      }
+      Phase.READY, Phase.GAME_OVER -> beginPlay()
       Phase.CLEARED -> {
         resetStage()
         phase = Phase.PLAYING
       }
-      Phase.PLAYING -> {}
+      Phase.PLAYING, Phase.DEMO -> {}
     }
+  }
+
+  private fun beginPlay() {
+    score = 0
+    lives = 3
+    playerHp = PLAYER_HITS
+    bombs = 3
+    power = 0
+    playerX = 0.5f
+    playerY = DEFAULT_PLAYER_Y
+    resetStage()
+    phase = Phase.PLAYING
+  }
+
+  private fun beginDemo() {
+    score = 0
+    lives = 3
+    playerHp = PLAYER_HITS
+    bombs = 3
+    power = 0
+    playerX = 0.5f
+    playerY = DEFAULT_PLAYER_Y
+    demoAimX = 0.5f
+    demoAimY = DEFAULT_PLAYER_Y
+    demoVx = 0f
+    demoVy = 0f
+    demoPrey = null
+    demoGroundPrey = null
+    resetStage()
+    invuln = 0f
+    wantFire = true
+    phase = Phase.DEMO
   }
 
   fun useBomb() {
@@ -207,15 +282,159 @@ class World(
   fun step(dt: Float) {
     val clamped = dt.coerceAtMost(0.05f)
     tickFx(clamped)
-    if (phase != Phase.PLAYING) return
+    if (phase == Phase.READY) {
+      idleT += clamped
+      if (idleT >= 5f) beginDemo()
+      return
+    }
+    if (phase != Phase.PLAYING && phase != Phase.DEMO) return
     var left = clamped
     val slice = 1f / 120f
-    while (left > 0f && phase == Phase.PLAYING) {
+    while (left > 0f && (phase == Phase.PLAYING || phase == Phase.DEMO)) {
       val s = min(slice, left)
+      if (phase == Phase.DEMO) {
+        demoPilot(s)
+        wantFire = true
+      }
       advance(s)
       left -= s
     }
     if (wantFire && playerOnField()) tryShot()
+  }
+
+  private fun demoPilot(dt: Float) {
+    refreshDemoPrey()
+    var bestX = demoHuntX()
+    var bestY = DEFAULT_PLAYER_Y
+    val danger = demoShotDanger(bestX, bestY)
+    val panic = danger < -1.2f
+    if (panic) {
+      val left = (bestX - 0.12f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
+      val right = (bestX + 0.12f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
+      val dl = demoShotDanger(left, bestY)
+      val dr = demoShotDanger(right, bestY)
+      bestX =
+        when {
+          dl >= dr && dl > danger -> left
+          dr > danger -> right
+          else -> bestX
+        }
+    }
+    val follow = if (panic) 16f else 11f
+    val blend = 1f - kotlin.math.exp(-follow * dt.toDouble()).toFloat()
+    demoAimX += (bestX - demoAimX) * blend
+    demoAimY += (bestY - demoAimY) * blend
+    val spring = if (panic) 30f else 24f
+    val damp = if (panic) 6.2f else 5.2f
+    demoVx += ((demoAimX - playerX) * spring - demoVx * damp) * dt
+    demoVy += ((demoAimY - playerY) * spring - demoVy * damp) * dt
+    val sp = hypot(demoVx, demoVy)
+    val maxSp = if (panic) 1.18f else 0.92f
+    if (sp > maxSp) {
+      demoVx *= maxSp / sp
+      demoVy *= maxSp / sp
+    }
+    movePlayer(playerX + demoVx * dt, playerY + demoVy * dt)
+  }
+
+  private fun demoHuntX(): Float {
+    val prey = demoPrey
+    if (prey != null && prey.alive) {
+      return (prey.x + mobW(prey.kind) / 2f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
+    }
+    val ground = demoGroundPrey
+    if (ground != null && ground.alive) {
+      val box = groundHurt(ground)
+      return (box.x + box.w / 2f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
+    }
+    boss?.let { b ->
+      if (!b.dying) return b.centerX().coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
+    }
+    return 0.5f
+  }
+
+  private fun refreshDemoPrey() {
+    val locked = demoPrey
+    if (locked != null && locked.alive) {
+      val my = locked.y + mobH(locked.kind) / 2f
+      if (my >= -0.06f && my <= 0.78f) return
+    }
+    demoPrey = null
+    var best: Mob? = null
+    var bestS = Float.NEGATIVE_INFINITY
+    mobs.forEach { mob ->
+      if (!mob.alive) return@forEach
+      val mx = mob.x + mobW(mob.kind) / 2f
+      val my = mob.y + mobH(mob.kind) / 2f
+      if (my < -0.06f || my > 0.78f) return@forEach
+      var s = 12f - abs(mx - playerX) * 2.2f
+      s += (0.52f - my).coerceIn(-0.25f, 0.52f) * 7f
+      if (mob.kind == MobKind.BOMBER) s += 7f
+      if (s > bestS) {
+        bestS = s
+        best = mob
+      }
+    }
+    demoPrey = best
+    if (best != null) {
+      demoGroundPrey = null
+      return
+    }
+    val gLocked = demoGroundPrey
+    if (gLocked != null && gLocked.alive) {
+      val gy = gLocked.y + groundDrawH(gLocked, viewAspect) * 0.5f
+      if (gy >= 0.12f && gy <= 0.76f) return
+    }
+    demoGroundPrey = null
+    var gBest: GroundUnit? = null
+    var gScore = Float.NEGATIVE_INFINITY
+    grounds.forEach { unit ->
+      if (!unit.alive) return@forEach
+      val box = groundHurt(unit)
+      val cx = box.x + box.w / 2f
+      val cy = box.y + box.h / 2f
+      if (cy < 0.12f || cy > 0.76f) return@forEach
+      var s = 6f - abs(cx - playerX) * 3f
+      if (unit.kind == GroundKind.BATTLESHIP) s += 5f
+      if (unit.kind == GroundKind.DESTROYER) s += 3f
+      if (s > gScore) {
+        gScore = s
+        gBest = unit
+      }
+    }
+    demoGroundPrey = gBest
+  }
+
+  private fun demoShotDanger(x: Float, y: Float): Float {
+    var s = 0f
+    val hx = x - SHIP_W * 0.22f
+    val hy = y - SHIP_H * 0.22f
+    val hw = SHIP_W * 0.56f
+    val hh = SHIP_H * 0.58f
+    shots.forEach { shot ->
+      if (!shot.alive || shot.fromPlayer) return@forEach
+      var t = 0f
+      while (t <= 0.38f) {
+        val sx = shot.x + shot.vx * t
+        val sy = shot.y + shot.vy * t
+        val cx = hx + hw * 0.5f
+        val cy = hy + hh * 0.5f
+        val px = abs(sx - cx) - hw * 0.5f - 0.025f
+        val py = abs(sy - cy) - hh * 0.5f - 0.025f
+        if (px < 0f && py < 0f) {
+          s -= (0.5f - t) * 14f
+          break
+        }
+        t += 0.035f
+      }
+    }
+    mobs.forEach { mob ->
+      if (!mob.alive) return@forEach
+      val mw = mobW(mob.kind)
+      val mh = mobH(mob.kind)
+      if (boxes(hx, hy, hw, hh, mob.x, mob.y, mw, mh)) s -= 8f
+    }
+    return s
   }
 
   private fun resetStage() {
@@ -237,6 +456,8 @@ class World(
     wantFire = false
     bossDeath = 0f
     deathBoomIn = 0f
+    demoPrey = null
+    demoGroundPrey = null
     cues.clear()
     seedGround()
     playerHp = PLAYER_HITS
@@ -307,52 +528,37 @@ class World(
   private fun maybeSpawn(dt: Float) {
     if (boss != null) return
     if (stageT > bossAt - 3f) return
+    if (mobs.any { it.alive }) {
+      spawnCool = 0.55f
+      return
+    }
     spawnCool -= dt
     if (spawnCool > 0f) return
     wave += 1
     when (PLANE_WAVES[(wave - 1) % PLANE_WAVES.size]) {
-      PlaneBeat.LINE -> spawnLine()
-      PlaneBeat.DIVE_L -> spawnDive(0.08f)
-      PlaneBeat.DIVE_R -> spawnDive(0.82f)
+      PlaneBeat.V_DOWN -> spawnFighters(Forms.V_DOWN)
+      PlaneBeat.CHAIN_L -> spawnFighters(Forms.CHAIN_L)
+      PlaneBeat.CHAIN_R -> spawnFighters(Forms.CHAIN_R)
+      PlaneBeat.RANK_ZIG -> spawnFighters(Forms.RANK_ZIG)
+      PlaneBeat.RING -> spawnFighters(Forms.RING)
       PlaneBeat.BOMBERS -> spawnBombers()
-      PlaneBeat.LINE_DIVE_L -> {
-        spawnLine()
-        spawnDive(0.08f)
-      }
-      PlaneBeat.LINE_DIVE_R -> {
-        spawnLine()
-        spawnDive(0.82f)
-      }
     }
-    spawnCool = (3.5f - wave * 0.04f).coerceAtLeast(2.3f)
+    spawnCool = 0.55f
   }
 
-  private fun spawnLine() {
-    val n = 3
-    val gap = 0.18f
-    val start = 0.5f - (n - 1) * gap / 2f
-    repeat(n) { i ->
+  private fun spawnFighters(form: Int) {
+    repeat(5) { slot ->
+      val (cx, cy) = formCenter(form, slot, 0f)
       mobs +=
         Mob(
-          x = start + i * gap - FIGHTER_W / 2f,
-          y = -0.08f - i * 0.05f,
+          x = cx - FIGHTER_W / 2f,
+          y = cy - FIGHTER_H / 2f,
           kind = MobKind.FIGHTER,
           hp = 2,
-          fire = 0.5f + i * 0.15f,
-          drop = i == 1,
-        )
-    }
-  }
-
-  private fun spawnDive(side: Float) {
-    repeat(2) { i ->
-      mobs +=
-        Mob(
-          x = side,
-          y = -0.1f - i * 0.07f,
-          kind = MobKind.DIVE,
-          hp = 2,
-          fire = 0.8f,
+          fire = 0.42f + slot * 0.11f,
+          drop = slot == 2,
+          form = form,
+          slot = slot,
         )
     }
   }
@@ -493,21 +699,20 @@ class World(
     mobs.filter { it.alive }.forEach { mob ->
       mob.t += dt
       mob.fire -= dt
-      when (mob.kind) {
-        MobKind.FIGHTER -> {
-          mob.y += 0.085f * dt
-          mob.x += sin(mob.t * 1.4f) * 0.025f * dt
-        }
-        MobKind.DIVE -> {
-          mob.y += 0.12f * dt
-          val mw = mobW(mob.kind)
-          val pull = (playerX - (mob.x + mw / 2f)) * 0.32f * dt
-          mob.x += pull
-        }
-        MobKind.BOMBER -> {
+      when {
+        mob.kind == MobKind.BOMBER -> {
           mob.y += 0.11f * dt
           mob.x += sin(mob.t * 0.85f) * 0.12f * dt
           mob.x = mob.x.coerceIn(0.06f, 1f - mobW(MobKind.BOMBER) - 0.06f)
+        }
+        mob.form >= 0 -> followForm(mob)
+        mob.kind == MobKind.DIVE -> {
+          mob.y += 0.12f * dt
+          val mw = mobW(mob.kind)
+          mob.x += (0.5f - (mob.x + mw / 2f)) * 0.18f * dt
+        }
+        else -> {
+          mob.y += 0.03f * dt
         }
       }
       if (mob.y > 1.12f) mob.alive = false
@@ -565,12 +770,12 @@ class World(
       }
     }
     pickups.filter { it.alive }.forEach { p ->
-      if (playerOnField() && boxes(playerLeft(), playerTop(), SHIP_W, SHIP_H, p.x, p.y, 0.09f, 0.09f)) {
+      if (playerOnField() && boxes(pickupBody(), pickupBox(p))) {
         p.alive = false
         power = (power + 1).coerceAtMost(2)
       }
     }
-    if (!playerOnField() || invuln > 0f) return
+    if (!playerOnField() || invuln > 0f || phase == Phase.DEMO) return
     val px = playerLeft()
     val py = playerTop()
     val bolt = shots.firstOrNull { it.alive && !it.fromPlayer && pointIn(it.x, it.y, px + SHIP_W * 0.28f, py + SHIP_H * 0.12f, SHIP_W * 0.44f, SHIP_H * 0.55f) }
@@ -678,7 +883,11 @@ class World(
     score += 5000
     boss = null
     bossDeath = 0f
-    phase = Phase.CLEARED
+    if (phase == Phase.DEMO) {
+      beginDemo()
+    } else {
+      phase = Phase.CLEARED
+    }
   }
 
   private fun killMob(mob: Mob) {
@@ -701,12 +910,14 @@ class World(
   }
 
   private fun chipPlayer() {
+    if (phase == Phase.DEMO) return
     playerHp -= 1
     invuln = 0.45f
     if (playerHp <= 0) hitPlayer()
   }
 
   private fun hitPlayer() {
+    if (phase == Phase.DEMO) return
     playerHp = 0
     lives -= 1
     boom(playerX, playerY, true)
@@ -802,6 +1013,24 @@ class World(
     return Box(hull.x + ix, hull.y + iy, hull.w - ix * 2f, hull.h - iy * 2f)
   }
 
+  private fun pickupBody(): Box {
+    val insetX = SHIP_W * 0.22f
+    val insetY = SHIP_H * 0.18f
+    return Box(
+      playerLeft() + insetX,
+      playerTop() + insetY,
+      SHIP_W - insetX * 2f,
+      SHIP_H - insetY * 2f,
+    )
+  }
+
+  private fun pickupBox(p: Pickup): Box {
+    val w = PICKUP_DRAW
+    val h = PICKUP_DRAW * viewAspect
+    val solid = 0.48f
+    return Box(p.x + w * (1f - solid) * 0.5f, p.y + h * (1f - solid) * 0.5f, w * solid, h * solid)
+  }
+
   private fun fuseBox(sprite: Box, kind: MobKind): Box {
     val frac = if (kind == MobKind.BOMBER) 0.17f else 0.22f
     val w = sprite.w * frac
@@ -820,6 +1049,8 @@ class World(
   private fun pointIn(px: Float, py: Float, x: Float, y: Float, w: Float, h: Float): Boolean =
     px >= x && px <= x + w && py >= y && py <= y + h
 
+  private fun boxes(a: Box, b: Box): Boolean = boxes(a.x, a.y, a.w, a.h, b.x, b.y, b.w, b.h)
+
   private fun boxes(ax: Float, ay: Float, aw: Float, ah: Float, box: Box): Boolean =
     boxes(ax, ay, aw, ah, box.x, box.y, box.w, box.h)
 
@@ -833,6 +1064,7 @@ class World(
     const val DEFAULT_PLAYER_Y = 0.849f
     const val FIGHTER_W = 0.118f
     const val FIGHTER_H = 0.100f
+    const val PICKUP_DRAW = 0.092f
     const val BOMBER_SCALE = 2.5f
     private const val FIGHTER_ART_W = 616f
     private const val FIGHTER_ART_H = 604f
@@ -845,28 +1077,115 @@ class World(
 
     fun mobH(kind: MobKind): Float = if (kind == MobKind.BOMBER) FIGHTER_H * BOMBER_SCALE else FIGHTER_H
   }
+
+  private fun followForm(mob: Mob) {
+    val (cx, cy) = formCenter(mob.form, mob.slot, mob.t)
+    mob.x = cx - FIGHTER_W / 2f
+    mob.y = cy - FIGHTER_H / 2f
+  }
+
+  private fun formCenter(form: Int, slot: Int, t: Float): Pair<Float, Float> {
+    return when (form) {
+      Forms.V_DOWN -> {
+        val vx = (slot - 2) * 0.082f
+        val vy = abs((slot - 2).toFloat()) * 0.048f
+        val cx = 0.50f + sin(t * 1.25f) * 0.14f + vx
+        val cy = -0.12f + t * 0.125f + vy
+        cx to cy
+      }
+      Forms.RANK_ZIG -> {
+        val cx = 0.30f + slot * 0.10f + sin(t * 2.35f) * 0.055f
+        val cy = -0.10f + t * 0.118f
+        cx to cy
+      }
+      Forms.CHAIN_L -> alongChain(left = true, t - slot * 0.20f)
+      Forms.CHAIN_R -> alongChain(left = false, t - slot * 0.20f)
+      Forms.RING -> {
+        val ang = t * 1.55f + slot * (2f * PI.toFloat() / 5f)
+        var rad = 0.22f
+        var cy0 = -0.04f + (t * 0.38f).coerceAtMost(0.32f)
+        if (t > 3.35f) {
+          val peel = t - 3.35f
+          cy0 += peel * 0.16f
+          rad *= (1f - peel * 0.22f).coerceAtLeast(0.18f)
+        }
+        val cx = 0.50f + cos(ang) * rad
+        val cy = cy0 + sin(ang) * rad * 0.70f
+        cx to cy
+      }
+      else -> 0.5f to -0.2f
+    }
+  }
+}
+
+internal object Forms {
+  const val NONE = -1
+  const val V_DOWN = 0
+  const val CHAIN_L = 1
+  const val CHAIN_R = 2
+  const val RANK_ZIG = 3
+  const val RING = 4
 }
 
 private enum class PlaneBeat {
-  LINE,
-  DIVE_L,
-  DIVE_R,
+  V_DOWN,
+  CHAIN_L,
+  CHAIN_R,
+  RANK_ZIG,
+  RING,
   BOMBERS,
-  LINE_DIVE_L,
-  LINE_DIVE_R,
 }
 
 private val PLANE_WAVES =
   listOf(
-    PlaneBeat.LINE,
-    PlaneBeat.DIVE_L,
+    PlaneBeat.V_DOWN,
+    PlaneBeat.CHAIN_L,
+    PlaneBeat.RANK_ZIG,
     PlaneBeat.BOMBERS,
-    PlaneBeat.LINE_DIVE_R,
-    PlaneBeat.LINE,
-    PlaneBeat.DIVE_R,
+    PlaneBeat.CHAIN_R,
+    PlaneBeat.RING,
+    PlaneBeat.V_DOWN,
     PlaneBeat.BOMBERS,
-    PlaneBeat.LINE_DIVE_L,
   )
+
+private val CHAIN_L_PATH =
+  floatArrayOf(
+    0.10f, -0.16f,
+    0.32f, 0.05f,
+    0.58f, 0.12f,
+    0.72f, 0.26f,
+    0.64f, 0.42f,
+    0.40f, 0.50f,
+    0.28f, 0.68f,
+    0.38f, 1.20f,
+  )
+
+private fun alongChain(left: Boolean, u: Float): Pair<Float, Float> {
+  val p = alongPath(CHAIN_L_PATH, u.coerceAtLeast(0f) * 0.46f)
+  return if (left) p else (1f - p.first) to p.second
+}
+
+private fun alongPath(pts: FloatArray, dist: Float): Pair<Float, Float> {
+  val n = pts.size / 2
+  if (n == 0) return 0.5f to -0.2f
+  if (dist <= 0f) return pts[0] to pts[1]
+  var remain = dist
+  var i = 0
+  while (i < n - 1) {
+    val x0 = pts[i * 2]
+    val y0 = pts[i * 2 + 1]
+    val x1 = pts[i * 2 + 2]
+    val y1 = pts[i * 2 + 3]
+    val len = hypot(x1 - x0, y1 - y0)
+    if (remain <= len) {
+      val k = if (len < 1e-6f) 0f else remain / len
+      return x0 + (x1 - x0) * k to y0 + (y1 - y0) * k
+    }
+    remain -= len
+    i++
+  }
+  return pts[pts.size - 2] to pts[pts.size - 1]
+}
 
 private data class Box(val x: Float, val y: Float, val w: Float, val h: Float)
 
