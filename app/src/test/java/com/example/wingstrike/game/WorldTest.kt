@@ -2,6 +2,7 @@ package com.example.wingstrike.game
 
 import kotlin.random.Random
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -170,6 +171,28 @@ class WorldTest {
   }
 
   @Test
+  fun fightersStayInFormationWithoutOverlapping() {
+    val forms =
+      listOf(Forms.V_DOWN, Forms.CHAIN_L, Forms.CHAIN_R, Forms.RANK_ZIG, Forms.RING)
+    val w = World.FIGHTER_W
+    val h = World.FIGHTER_H
+    var t = 0f
+    while (t <= 14f) {
+      for (form in forms) {
+        val seats = (0 until 5).map { fighterFormCenter(form, it, t) }
+        for (i in seats.indices) {
+          for (j in i + 1 until seats.size) {
+            val dx = kotlin.math.abs(seats[i].first - seats[j].first)
+            val dy = kotlin.math.abs(seats[i].second - seats[j].second)
+            assertFalse("form=$form t=$t i=$i j=$j dx=$dx dy=$dy", dx < w && dy < h)
+          }
+        }
+      }
+      t += 0.05f
+    }
+  }
+
+  @Test
   fun demoPilotHuntsFighters() {
     val world = World(Random(0), bossAt = 0.08f)
     world.setViewSize(1080f, 1920f)
@@ -193,6 +216,8 @@ class WorldTest {
     world.movePlayer(0.22f, World.DEFAULT_PLAYER_Y)
     repeat(100) { world.step(1f / 60f) }
     assertTrue(kotlin.math.abs(world.playerX - 0.78f) < 0.16f)
+    assertTrue(world.playerY < World.DEFAULT_PLAYER_Y - 0.06f)
+    assertTrue(world.playerY > 0.40f)
   }
 
   @Test

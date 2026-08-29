@@ -340,20 +340,37 @@ class World(
   private fun demoPilot(dt: Float) {
     refreshDemoPrey()
     var bestX = demoHuntX()
-    var bestY = DEFAULT_PLAYER_Y
+    var bestY = demoHuntY()
     val danger = demoShotDanger(bestX, bestY)
     val panic = danger < -1.2f
     if (panic) {
-      val left = (bestX - 0.12f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
-      val right = (bestX + 0.12f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
-      val dl = demoShotDanger(left, bestY)
-      val dr = demoShotDanger(right, bestY)
-      bestX =
-        when {
-          dl >= dr && dl > danger -> left
-          dr > danger -> right
-          else -> bestX
+      var pickX = bestX
+      var pickY = bestY
+      var pickS = danger
+      val xs =
+        floatArrayOf(
+          bestX,
+          (bestX - 0.12f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f),
+          (bestX + 0.12f).coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f),
+        )
+      val ys =
+        floatArrayOf(
+          bestY,
+          (bestY - 0.11f).coerceIn(demoMinY(), demoMaxY()),
+          (bestY + 0.11f).coerceIn(demoMinY(), demoMaxY()),
+        )
+      xs.forEach { x ->
+        ys.forEach { y ->
+          val s = demoShotDanger(x, y)
+          if (s > pickS) {
+            pickS = s
+            pickX = x
+            pickY = y
+          }
         }
+      }
+      bestX = pickX
+      bestY = pickY
     }
     val follow = if (panic) 16f else 11f
     val blend = 1f - kotlin.math.exp(-follow * dt.toDouble()).toFloat()
@@ -363,14 +380,16 @@ class World(
     val damp = if (panic) 6.2f else 5.2f
     demoVx += ((demoAimX - playerX) * spring - demoVx * damp) * dt
     demoVy += ((demoAimY - playerY) * spring - demoVy * damp) * dt
-    val sp = hypot(demoVx, demoVy)
-    val maxSp = if (panic) 1.18f else 0.92f
-    if (sp > maxSp) {
-      demoVx *= maxSp / sp
-      demoVy *= maxSp / sp
-    }
+    val maxVx = if (panic) 1.18f else 0.92f
+    val maxVy = if (panic) 0.36f else 0.28f
+    demoVx = demoVx.coerceIn(-maxVx, maxVx)
+    demoVy = demoVy.coerceIn(-maxVy, maxVy)
     movePlayer(playerX + demoVx * dt, playerY + demoVy * dt)
   }
+
+  private fun demoMinY(): Float = SHIP_H / 2f + 0.06f
+
+  private fun demoMaxY(): Float = DEFAULT_PLAYER_Y
 
   private fun demoHuntX(): Float {
     val prey = demoPrey
@@ -386,6 +405,27 @@ class World(
       if (!b.dying) return b.centerX().coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
     }
     return 0.5f
+  }
+
+  private fun demoHuntY(): Float {
+    val prey = demoPrey
+    if (prey != null && prey.alive) {
+      val my = prey.y + mobH(prey.kind) / 2f
+      return (my + 0.34f).coerceIn(demoMinY(), demoMaxY())
+    }
+    val ground = demoGroundPrey
+    if (ground != null && ground.alive) {
+      val box = groundHurt(ground)
+      val cy = box.y + box.h / 2f
+      return (cy + 0.30f).coerceIn(demoMinY(), demoMaxY())
+    }
+    boss?.let { b ->
+      if (!b.dying) {
+        val by = b.centerY() + 0.38f
+        return by.coerceIn(demoMinY(), demoMaxY())
+      }
+    }
+    return DEFAULT_PLAYER_Y
   }
 
   private fun refreshDemoPrey() {
@@ -712,7 +752,7 @@ class World(
 
   private fun spawnFighters(form: Int) {
     repeat(5) { slot ->
-      val (cx, cy) = formCenter(form, slot, 0f)
+      val (cx, cy) = fighterFormCenter(form, slot, 0f)
       mobs +=
         Mob(
           x = cx - FIGHTER_W / 2f,
@@ -877,7 +917,7 @@ class World(
           mob.x += sin(mob.t * 0.85f) * 0.12f * dt
           mob.x = mob.x.coerceIn(0.06f, 1f - mobW(MobKind.BOMBER) - 0.06f)
         }
-        mob.form >= 0 -> followForm(mob, dt)
+        mob.form >= 0 -> followForm(mob)
         mob.kind == MobKind.DIVE -> {
           mob.y += 0.12f * dt
           val mw = mobW(mob.kind)
@@ -1244,7 +1284,7 @@ class World(
     const val RUNWAY_HOLD = 0.50f
     const val FIGHTER_W = 0.118f
     const val FIGHTER_H = 0.100f
-    private const val FIGHTER_MAX_SP = 0.26f
+    const val FORM_GAP = FIGHTER_W + FIGHTER_W / 3f
     const val PICKUP_DRAW = 0.092f
     const val BOMBER_SCALE = 2.5f
     private const val FIGHTER_ART_W = 616f
@@ -1259,54 +1299,10 @@ class World(
     fun mobH(kind: MobKind): Float = if (kind == MobKind.BOMBER) FIGHTER_H * BOMBER_SCALE else FIGHTER_H
   }
 
-  private fun followForm(mob: Mob, dt: Float) {
-    val (cx, cy) = formCenter(mob.form, mob.slot, mob.t)
-    val tx = cx - FIGHTER_W / 2f
-    val ty = cy - FIGHTER_H / 2f
-    val dx = tx - mob.x
-    val dy = ty - mob.y
-    val dist = hypot(dx, dy)
-    val max = FIGHTER_MAX_SP * dt
-    if (dist > max && dist > 1e-5f) {
-      mob.x += dx * (max / dist)
-      mob.y += dy * (max / dist)
-    } else {
-      mob.x = tx
-      mob.y = ty
-    }
-  }
-
-  private fun formCenter(form: Int, slot: Int, t: Float): Pair<Float, Float> {
-    return when (form) {
-      Forms.V_DOWN -> {
-        val vx = (slot - 2) * 0.082f
-        val vy = abs((slot - 2).toFloat()) * 0.048f
-        val cx = 0.50f + sin(t * 0.85f) * 0.12f + vx
-        val cy = -0.12f + t * 0.12f + vy
-        cx to cy
-      }
-      Forms.RANK_ZIG -> {
-        val cx = 0.30f + slot * 0.10f + sin(t * 1.15f) * 0.05f
-        val cy = -0.10f + t * 0.12f
-        cx to cy
-      }
-      Forms.CHAIN_L -> alongChain(left = true, t - slot * 0.22f)
-      Forms.CHAIN_R -> alongChain(left = false, t - slot * 0.22f)
-      Forms.RING -> {
-        val ang = t * 0.95f + slot * (2f * PI.toFloat() / 5f)
-        var rad = 0.22f
-        var cy0 = -0.04f + (t * 0.16f).coerceAtMost(0.30f)
-        if (t > 3.6f) {
-          val peel = t - 3.6f
-          cy0 += peel * 0.12f
-          rad *= (1f - peel * 0.18f).coerceAtLeast(0.18f)
-        }
-        val cx = 0.50f + cos(ang) * rad
-        val cy = cy0 + sin(ang) * rad * 0.70f
-        cx to cy
-      }
-      else -> 0.5f to -0.2f
-    }
+  private fun followForm(mob: Mob) {
+    val (cx, cy) = fighterFormCenter(mob.form, mob.slot, mob.t)
+    mob.x = cx - FIGHTER_W / 2f
+    mob.y = cy - FIGHTER_H / 2f
   }
 }
 
@@ -1317,6 +1313,36 @@ internal object Forms {
   const val CHAIN_R = 2
   const val RANK_ZIG = 3
   const val RING = 4
+}
+
+internal fun fighterFormCenter(form: Int, slot: Int, t: Float): Pair<Float, Float> {
+  val gap = World.FORM_GAP
+  return when (form) {
+    Forms.V_DOWN -> {
+      val vx = (slot - 2) * gap
+      val vy = abs((slot - 2).toFloat()) * (World.FIGHTER_H / 3f)
+      val cx = 0.50f + sin(t * 0.70f) * 0.08f + vx
+      val cy = -0.14f + t * 0.19f + vy
+      cx to cy
+    }
+    Forms.RANK_ZIG -> {
+      val cx = 0.50f + (slot - 2) * gap + sin(t * 0.90f) * 0.04f
+      val cy = -0.12f + t * 0.19f
+      cx to cy
+    }
+    Forms.CHAIN_L -> chainSeat(left = true, t, slot, gap)
+    Forms.CHAIN_R -> chainSeat(left = false, t, slot, gap)
+    Forms.RING -> {
+      val step = 2f * PI.toFloat() / 5f
+      val rad = gap / (1f - cos(step))
+      val ang = t * 1.15f + slot * step
+      val cy0 = -0.10f + t * 0.18f
+      val cx = 0.50f + cos(ang) * rad
+      val cy = cy0 + sin(ang) * rad * 0.72f
+      cx to cy
+    }
+    else -> 0.5f to -0.2f
+  }
 }
 
 private enum class PlaneBeat {
@@ -1342,25 +1368,34 @@ private val PLANE_WAVES =
 
 private val CHAIN_L_PATH =
   floatArrayOf(
-    0.10f, -0.16f,
-    0.32f, 0.05f,
-    0.58f, 0.12f,
-    0.72f, 0.26f,
-    0.64f, 0.42f,
-    0.40f, 0.50f,
-    0.28f, 0.68f,
-    0.38f, 1.20f,
+    0.12f, -0.18f,
+    0.28f, 0.00f,
+    0.46f, 0.14f,
+    0.58f, 0.30f,
+    0.54f, 0.48f,
+    0.42f, 0.64f,
+    0.36f, 0.84f,
+    0.40f, 1.22f,
   )
 
-private fun alongChain(left: Boolean, u: Float): Pair<Float, Float> {
-  val p = alongPath(CHAIN_L_PATH, u.coerceAtLeast(0f) * 0.24f)
+private fun chainSeat(left: Boolean, t: Float, slot: Int, gap: Float): Pair<Float, Float> {
+  val speed = 0.36f
+  val dist = t * speed - slot * gap
+  val p = alongPath(CHAIN_L_PATH, dist)
   return if (left) p else (1f - p.first) to p.second
 }
 
 private fun alongPath(pts: FloatArray, dist: Float): Pair<Float, Float> {
   val n = pts.size / 2
   if (n == 0) return 0.5f to -0.2f
-  if (dist <= 0f) return pts[0] to pts[1]
+  if (dist <= 0f) {
+    val x0 = pts[0]
+    val y0 = pts[1]
+    val x1 = pts[2]
+    val y1 = pts[3]
+    val len = hypot(x1 - x0, y1 - y0).coerceAtLeast(1e-4f)
+    return x0 - (x1 - x0) / len * (-dist) to y0 - (y1 - y0) / len * (-dist)
+  }
   var remain = dist
   var i = 0
   while (i < n - 1) {
@@ -1376,7 +1411,14 @@ private fun alongPath(pts: FloatArray, dist: Float): Pair<Float, Float> {
     remain -= len
     i++
   }
-  return pts[pts.size - 2] to pts[pts.size - 1]
+  val x0 = pts[pts.size - 4]
+  val y0 = pts[pts.size - 3]
+  val x1 = pts[pts.size - 2]
+  val y1 = pts[pts.size - 1]
+  val len = hypot(x1 - x0, y1 - y0).coerceAtLeast(1e-4f)
+  val ux = (x1 - x0) / len
+  val uy = (y1 - y0) / len
+  return x1 + ux * remain to y1 + uy * remain
 }
 
 private data class Box(val x: Float, val y: Float, val w: Float, val h: Float)
