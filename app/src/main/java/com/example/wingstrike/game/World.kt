@@ -14,6 +14,12 @@ enum class Phase {
   GAME_OVER,
 }
 
+private enum class Flight {
+  TAKEOFF,
+  AIR,
+  LANDING,
+}
+
 enum class MobKind {
   FIGHTER,
   DIVE,
@@ -44,7 +50,17 @@ data class Mob(
   var slot: Int = 0,
 )
 
-data class Pickup(var x: Float, var y: Float, var alive: Boolean = true)
+data class Pickup(
+  var x: Float,
+  var y: Float,
+  val kind: PickupKind = PickupKind.POWER,
+  var alive: Boolean = true,
+)
+
+enum class PickupKind {
+  POWER,
+  BOMB,
+}
 
 enum class SfxKind {
   SHOT,
@@ -112,6 +128,8 @@ class World(
     private set
   var playerY: Float = DEFAULT_PLAYER_Y
     private set
+  var playerScale: Float = 1f
+    private set
   var invuln: Float = 0f
     private set
   var respawnIn: Float = 0f
@@ -162,10 +180,31 @@ class World(
   private var wave = 0
   private var bossDeath = 0f
   private var deathBoomIn = 0f
+  private var flight = Flight.TAKEOFF
+  private var takeoffT = 0f
+  private var landFrom = 0f
+  private var landTo = 0f
+  private var landWait = 0f
+  private var lootN = 0
 
   fun movePlayer(nx: Float, ny: Float = playerY) {
-    playerX = nx.coerceIn(SHIP_W / 2f, 1f - SHIP_W / 2f)
-    playerY = ny.coerceIn(SHIP_H / 2f, 1f - SHIP_H / 2f)
+    if (flight != Flight.AIR) return
+    placePlayer(nx, ny)
+  }
+
+  fun combat(): Boolean =
+    (phase == Phase.PLAYING || phase == Phase.DEMO) && flight == Flight.AIR && playerOnField()
+
+  private fun placePlayer(nx: Float, ny: Float) {
+    val hw = SHIP_W * playerScale / 2f
+    val hh = SHIP_H * playerScale / 2f
+    playerX = nx.coerceIn(hw, 1f - hw)
+    playerY = ny.coerceIn(hh, 1f - hh)
+  }
+
+  private fun groundedY(): Float {
+    val hh = SHIP_H * GROUND_SCALE / 2f
+    return (1f - hh - 0.02f).coerceIn(hh, 1f - hh)
   }
 
   fun setFiring(on: Boolean) {
@@ -211,9 +250,9 @@ class World(
     resetStage()
   }
 
-  fun playerLeft(): Float = playerX - SHIP_W / 2f
+  fun playerLeft(): Float = playerX - SHIP_W * playerScale / 2f
 
-  fun playerTop(): Float = playerY - SHIP_H / 2f
+  fun playerTop(): Float = playerY - SHIP_H * playerScale / 2f
 
   fun playerOnField(): Boolean = respawnIn <= 0f && lives > 0
 
@@ -236,8 +275,6 @@ class World(
     playerHp = PLAYER_HITS
     bombs = 3
     power = 0
-    playerX = 0.5f
-    playerY = DEFAULT_PLAYER_Y
     resetStage()
     phase = Phase.PLAYING
   }
@@ -248,8 +285,6 @@ class World(
     playerHp = PLAYER_HITS
     bombs = 3
     power = 0
-    playerX = 0.5f
-    playerY = DEFAULT_PLAYER_Y
     demoAimX = 0.5f
     demoAimY = DEFAULT_PLAYER_Y
     demoVx = 0f
@@ -263,7 +298,7 @@ class World(
   }
 
   fun useBomb() {
-    if (phase != Phase.PLAYING || bombs <= 0 || !playerOnField()) return
+    if (phase != Phase.PLAYING || flight != Flight.AIR || bombs <= 0 || !playerOnField()) return
     bombs -= 1
     bombFlash = 0.35f
     cues += SfxCue(SfxKind.BOOM_BIG, playerX)
@@ -292,14 +327,14 @@ class World(
     val slice = 1f / 120f
     while (left > 0f && (phase == Phase.PLAYING || phase == Phase.DEMO)) {
       val s = min(slice, left)
-      if (phase == Phase.DEMO) {
+      if (phase == Phase.DEMO && flight == Flight.AIR) {
         demoPilot(s)
         wantFire = true
       }
       advance(s)
       left -= s
     }
-    if (wantFire && playerOnField()) tryShot()
+    if (wantFire && combat()) tryShot()
   }
 
   private fun demoPilot(dt: Float) {
@@ -461,7 +496,13 @@ class World(
     cues.clear()
     seedGround()
     playerHp = PLAYER_HITS
-    invuln = 1.2f
+    flight = Flight.TAKEOFF
+    takeoffT = 0f
+    landWait = 0f
+    lootN = 0
+    playerScale = GROUND_SCALE
+    placePlayer(0.5f, groundedY())
+    invuln = 0f
   }
 
   private fun tickFx(dt: Float) {
@@ -489,6 +530,7 @@ class World(
     if (respawnIn > 0f) {
       respawnIn = (respawnIn - dt).coerceAtLeast(0f)
       if (respawnIn == 0f && lives > 0) {
+        playerScale = 1f
         playerX = 0.5f
         playerY = DEFAULT_PLAYER_Y
         playerHp = PLAYER_HITS
@@ -498,9 +540,22 @@ class World(
     }
     invuln = (invuln - dt).coerceAtLeast(0f)
     fireCool = (fireCool - dt).coerceAtLeast(0f)
-    stageT += dt
-    val scrolling = boss == null || boss?.entered == false
-    scroll += (if (scrolling) 0.055f else 0.014f) * dt
+    when (flight) {
+      Flight.TAKEOFF -> stepTakeoff(dt)
+      Flight.LANDING -> stepLanding(dt)
+      Flight.AIR -> {
+        stageT += dt
+        val hold = stripEnterScroll() - RUNWAY_HOLD
+        val b = boss
+        if (b != null && !b.dying) {
+          if (scroll < hold) scroll += 0.055f * dt
+          if (scroll > hold) scroll = hold
+        } else {
+          val scrolling = b == null || b.entered == false
+          scroll += (if (scrolling) 0.055f else 0.014f) * dt
+        }
+      }
+    }
     moveShots(dt)
     moveMobs(dt)
     moveGround(dt)
@@ -509,6 +564,110 @@ class World(
     maybeBoss()
     stepBoss(dt)
     collide()
+  }
+
+  private fun stepTakeoff(dt: Float) {
+    takeoffT += dt
+    val y0 = groundedY()
+    val y1 = DEFAULT_PLAYER_Y
+    val rollAt = 1.15f
+    val liftAt = 2.4f
+    when {
+      takeoffT < rollAt -> {
+        playerScale = GROUND_SCALE
+        placePlayer(0.5f, y0)
+        scroll = 0f
+      }
+      takeoffT < liftAt -> {
+        playerScale = GROUND_SCALE
+        placePlayer(0.5f, y0)
+        scroll = (takeoffT - rollAt) * 0.13f
+      }
+      else -> {
+        val lift = ((takeoffT - liftAt) / (TAKEOFF_T - liftAt)).coerceIn(0f, 1f)
+        val ease = lift * lift * (3f - 2f * lift)
+        playerScale = GROUND_SCALE + (1f - GROUND_SCALE) * ease
+        placePlayer(0.5f, y0 + (y1 - y0) * ease)
+        scroll = (liftAt - rollAt) * 0.13f + (takeoffT - liftAt) * 0.055f
+      }
+    }
+    if (takeoffT >= TAKEOFF_T) {
+      flight = Flight.AIR
+      playerScale = 1f
+      placePlayer(0.5f, y1)
+      invuln = 1.1f
+    }
+  }
+
+  private fun stepLanding(dt: Float) {
+    val span = (landTo - landFrom).coerceAtLeast(0.12f)
+    val left = (landTo - scroll).coerceAtLeast(0f)
+    val spd =
+      when {
+        left < 0.16f -> 0.16f
+        left < 0.36f -> 0.34f
+        else -> 0.52f
+      }
+    scroll = (scroll + spd * dt).coerceAtMost(landTo)
+    val u = ((scroll - landFrom) / span).coerceIn(0f, 1f)
+    val drop = ((u - 0.18f) / 0.82f).coerceIn(0f, 1f)
+    val dropE = drop * drop * (3f - 2f * drop)
+    playerScale = 1f + (GROUND_SCALE - 1f) * dropE
+    val ty = groundedY()
+    val blendX = 1f - kotlin.math.exp(-4.2 * dt.toDouble()).toFloat()
+    val blendY = 1f - kotlin.math.exp(-6.0 * dt.toDouble()).toFloat()
+    placePlayer(playerX + (0.5f - playerX) * blendX, playerY + (ty - playerY) * (0.18f + 0.82f * dropE) * blendY)
+    if (scroll >= landTo - 0.0005f) {
+      landWait += dt
+      if (landWait > 0.85f || (abs(playerY - ty) < 0.02f && abs(playerX - 0.5f) < 0.04f)) {
+        scroll = landTo
+        playerScale = GROUND_SCALE
+        placePlayer(0.5f, ty)
+        finishLanding()
+      }
+    }
+  }
+
+  private fun loopPeriod(): Float = StageMap.periodN(viewAspect)
+
+  /** Next view that matches takeoff: runway at the bottom of the phone. */
+  private fun nextTakeoffScroll(): Float {
+    val p = loopPeriod()
+    val base = kotlin.math.floor((scroll / p).toDouble()).toFloat() * p
+    var wrap = base + p
+    if (wrap <= scroll + 0.04f) wrap += p
+    return wrap
+  }
+
+  /** Looping strip starts coming in from the top — still off-screen above. */
+  private fun stripEnterScroll(): Float {
+    var enter = nextTakeoffScroll() - 1f
+    if (enter <= scroll + 0.02f) enter = nextTakeoffScroll() - 1f + loopPeriod()
+    return enter
+  }
+
+  private fun beginLanding() {
+    flight = Flight.LANDING
+    val target = nextTakeoffScroll()
+    if (target - scroll > 1.2f) {
+      scroll = stripEnterScroll() - RUNWAY_HOLD
+    }
+    landFrom = scroll
+    landTo = nextTakeoffScroll()
+    landWait = 0f
+    wantFire = false
+    mobs.clear()
+    pickups.clear()
+    shots.removeAll { !it.fromPlayer }
+    syncGround()
+  }
+
+  private fun finishLanding() {
+    if (phase == Phase.DEMO) {
+      beginDemo()
+    } else {
+      phase = Phase.CLEARED
+    }
   }
 
   private fun tryShot() {
@@ -526,8 +685,13 @@ class World(
   }
 
   private fun maybeSpawn(dt: Float) {
+    if (flight != Flight.AIR) return
     if (boss != null) return
-    if (stageT > bossAt - 3f) return
+    if (earlyBossClock()) {
+      if (stageT > bossAt - 3f) return
+    } else if (stripEnterScroll() - scroll <= BOSS_LEAD + 0.4f) {
+      return
+    }
     if (mobs.any { it.alive }) {
       spawnCool = 0.55f
       return
@@ -556,7 +720,7 @@ class World(
           kind = MobKind.FIGHTER,
           hp = 2,
           fire = 0.42f + slot * 0.11f,
-          drop = slot == 2,
+          drop = slot == 2 && wave % 2 == 0,
           form = form,
           slot = slot,
         )
@@ -571,7 +735,7 @@ class World(
         kind = MobKind.BOMBER,
         hp = 12,
         fire = 0.6f,
-        drop = true,
+        drop = wave % 2 == 0,
       )
   }
 
@@ -624,7 +788,7 @@ class World(
     grounds.filter { it.alive }.forEach { unit ->
       if (!unit.kind.shoots()) return@forEach
       val onScreen = unit.y > -0.12f && unit.y < 0.88f && unit.x > -0.12f && unit.x < 1.02f
-      if (!onScreen) return@forEach
+      if (!onScreen || flight != Flight.AIR) return@forEach
       unit.fire -= dt
       if (unit.fire > 0f) return@forEach
       val gun = groundMuzzle(unit)
@@ -638,12 +802,20 @@ class World(
   }
 
   private fun maybeBoss() {
+    if (flight != Flight.AIR) return
     if (boss != null) return
-    if (stageT < bossAt) return
+    if (bossAt >= 80f) return
+    if (earlyBossClock()) {
+      if (stageT < bossAt) return
+    } else if (stripEnterScroll() - scroll > BOSS_LEAD) {
+      return
+    }
     if (mobs.any { it.alive }) return
     warning = 2.2f
     boss = Boss()
   }
+
+  private fun earlyBossClock(): Boolean = bossAt < 8f
 
   private fun stepBoss(dt: Float) {
     val b = boss ?: return
@@ -705,7 +877,7 @@ class World(
           mob.x += sin(mob.t * 0.85f) * 0.12f * dt
           mob.x = mob.x.coerceIn(0.06f, 1f - mobW(MobKind.BOMBER) - 0.06f)
         }
-        mob.form >= 0 -> followForm(mob)
+        mob.form >= 0 -> followForm(mob, dt)
         mob.kind == MobKind.DIVE -> {
           mob.y += 0.12f * dt
           val mw = mobW(mob.kind)
@@ -770,12 +942,15 @@ class World(
       }
     }
     pickups.filter { it.alive }.forEach { p ->
-      if (playerOnField() && boxes(pickupBody(), pickupBox(p))) {
+      if (combat() && boxes(pickupBody(), pickupBox(p))) {
         p.alive = false
-        power = (power + 1).coerceAtMost(2)
+        when (p.kind) {
+          PickupKind.POWER -> power = (power + 1).coerceAtMost(2)
+          PickupKind.BOMB -> bombs = (bombs + 1).coerceAtMost(6)
+        }
       }
     }
-    if (!playerOnField() || invuln > 0f || phase == Phase.DEMO) return
+    if (!combat() || invuln > 0f || phase == Phase.DEMO) return
     val px = playerLeft()
     val py = playerTop()
     val bolt = shots.firstOrNull { it.alive && !it.fromPlayer && pointIn(it.x, it.y, px + SHIP_W * 0.28f, py + SHIP_H * 0.12f, SHIP_W * 0.44f, SHIP_H * 0.55f) }
@@ -883,11 +1058,7 @@ class World(
     score += 5000
     boss = null
     bossDeath = 0f
-    if (phase == Phase.DEMO) {
-      beginDemo()
-    } else {
-      phase = Phase.CLEARED
-    }
+    beginLanding()
   }
 
   private fun killMob(mob: Mob) {
@@ -906,7 +1077,12 @@ class World(
     } else {
       boom(cx, cy, false)
     }
-    if (mob.drop) pickups += Pickup(mob.x + 0.02f, mob.y)
+    if (mob.drop) pickups += Pickup(mob.x + 0.02f, mob.y, nextLoot())
+  }
+
+  private fun nextLoot(): PickupKind {
+    lootN += 1
+    return if (lootN % 2 == 0) PickupKind.BOMB else PickupKind.POWER
   }
 
   private fun chipPlayer() {
@@ -1062,8 +1238,13 @@ class World(
     const val SHIP_W = 0.168f
     const val SHIP_H = 0.138f
     const val DEFAULT_PLAYER_Y = 0.849f
+    const val GROUND_SCALE = 0.42f
+    const val TAKEOFF_T = 3.85f
+    const val BOSS_LEAD = 0.55f
+    const val RUNWAY_HOLD = 0.50f
     const val FIGHTER_W = 0.118f
     const val FIGHTER_H = 0.100f
+    private const val FIGHTER_MAX_SP = 0.26f
     const val PICKUP_DRAW = 0.092f
     const val BOMBER_SCALE = 2.5f
     private const val FIGHTER_ART_W = 616f
@@ -1078,10 +1259,21 @@ class World(
     fun mobH(kind: MobKind): Float = if (kind == MobKind.BOMBER) FIGHTER_H * BOMBER_SCALE else FIGHTER_H
   }
 
-  private fun followForm(mob: Mob) {
+  private fun followForm(mob: Mob, dt: Float) {
     val (cx, cy) = formCenter(mob.form, mob.slot, mob.t)
-    mob.x = cx - FIGHTER_W / 2f
-    mob.y = cy - FIGHTER_H / 2f
+    val tx = cx - FIGHTER_W / 2f
+    val ty = cy - FIGHTER_H / 2f
+    val dx = tx - mob.x
+    val dy = ty - mob.y
+    val dist = hypot(dx, dy)
+    val max = FIGHTER_MAX_SP * dt
+    if (dist > max && dist > 1e-5f) {
+      mob.x += dx * (max / dist)
+      mob.y += dy * (max / dist)
+    } else {
+      mob.x = tx
+      mob.y = ty
+    }
   }
 
   private fun formCenter(form: Int, slot: Int, t: Float): Pair<Float, Float> {
@@ -1089,25 +1281,25 @@ class World(
       Forms.V_DOWN -> {
         val vx = (slot - 2) * 0.082f
         val vy = abs((slot - 2).toFloat()) * 0.048f
-        val cx = 0.50f + sin(t * 1.25f) * 0.14f + vx
-        val cy = -0.12f + t * 0.125f + vy
+        val cx = 0.50f + sin(t * 0.85f) * 0.12f + vx
+        val cy = -0.12f + t * 0.12f + vy
         cx to cy
       }
       Forms.RANK_ZIG -> {
-        val cx = 0.30f + slot * 0.10f + sin(t * 2.35f) * 0.055f
-        val cy = -0.10f + t * 0.118f
+        val cx = 0.30f + slot * 0.10f + sin(t * 1.15f) * 0.05f
+        val cy = -0.10f + t * 0.12f
         cx to cy
       }
-      Forms.CHAIN_L -> alongChain(left = true, t - slot * 0.20f)
-      Forms.CHAIN_R -> alongChain(left = false, t - slot * 0.20f)
+      Forms.CHAIN_L -> alongChain(left = true, t - slot * 0.22f)
+      Forms.CHAIN_R -> alongChain(left = false, t - slot * 0.22f)
       Forms.RING -> {
-        val ang = t * 1.55f + slot * (2f * PI.toFloat() / 5f)
+        val ang = t * 0.95f + slot * (2f * PI.toFloat() / 5f)
         var rad = 0.22f
-        var cy0 = -0.04f + (t * 0.38f).coerceAtMost(0.32f)
-        if (t > 3.35f) {
-          val peel = t - 3.35f
-          cy0 += peel * 0.16f
-          rad *= (1f - peel * 0.22f).coerceAtLeast(0.18f)
+        var cy0 = -0.04f + (t * 0.16f).coerceAtMost(0.30f)
+        if (t > 3.6f) {
+          val peel = t - 3.6f
+          cy0 += peel * 0.12f
+          rad *= (1f - peel * 0.18f).coerceAtLeast(0.18f)
         }
         val cx = 0.50f + cos(ang) * rad
         val cy = cy0 + sin(ang) * rad * 0.70f
@@ -1161,7 +1353,7 @@ private val CHAIN_L_PATH =
   )
 
 private fun alongChain(left: Boolean, u: Float): Pair<Float, Float> {
-  val p = alongPath(CHAIN_L_PATH, u.coerceAtLeast(0f) * 0.46f)
+  val p = alongPath(CHAIN_L_PATH, u.coerceAtLeast(0f) * 0.24f)
   return if (left) p else (1f - p.first) to p.second
 }
 

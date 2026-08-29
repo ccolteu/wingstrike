@@ -16,8 +16,9 @@ class WorldTest {
 
   @Test
   fun holdingFireSendsShots() {
-    val world = World(Random(1))
+    val world = World(Random(1), bossAt = 99f)
     world.startOrAdvance()
+    skipTakeoff(world)
     world.movePlayer(0.5f)
     world.setFiring(true)
     repeat(20) { world.step(1f / 60f) }
@@ -28,6 +29,8 @@ class WorldTest {
   fun shotAndBoomEmitSeparateCues() {
     val world = World(Random(2), bossAt = 99f)
     world.startOrAdvance()
+    skipTakeoff(world)
+    world.takeCues()
     world.movePlayer(0.5f)
     world.setFiring(true)
     world.step(0.2f)
@@ -47,9 +50,12 @@ class WorldTest {
   @Test
   fun bossArrivesAfterTheStageClock() {
     val world = World(Random(0), bossAt = 0.35f)
+    world.setViewSize(1080f, 1920f)
     world.startOrAdvance()
+    skipTakeoff(world)
     var guard = 0
-    while (world.boss == null && world.phase == Phase.PLAYING && guard++ < 400) {
+    while (world.boss == null && world.phase == Phase.PLAYING && guard++ < 800) {
+      world.mobs.clear()
       world.step(1f / 60f)
     }
     assertTrue(world.boss != null)
@@ -132,6 +138,8 @@ class WorldTest {
     val b = World(Random(99), bossAt = 99f)
     a.startOrAdvance()
     b.startOrAdvance()
+    skipTakeoff(a)
+    skipTakeoff(b)
     var guard = 0
     while (a.mobs.count { it.kind == MobKind.FIGHTER } < 5 && guard++ < 200) {
       a.step(1f / 60f)
@@ -189,8 +197,9 @@ class WorldTest {
 
   @Test
   fun playerStaysFullyOnScreen() {
-    val world = World(Random(0))
+    val world = World(Random(0), bossAt = 99f)
     world.startOrAdvance()
+    skipTakeoff(world)
     world.movePlayer(-1f, -1f)
     assertTrue(world.playerLeft() >= 0f)
     assertTrue(world.playerTop() >= 0f)
@@ -204,6 +213,7 @@ class WorldTest {
     val world = World(Random(0), bossAt = 99f)
     world.setViewSize(1080f, 1920f)
     world.startOrAdvance()
+    skipTakeoff(world)
     world.movePlayer(0.5f, 0.55f)
     world.pickups += Pickup(world.playerLeft() + World.SHIP_W - 0.02f, world.playerTop())
     world.step(1f / 60f)
@@ -217,10 +227,26 @@ class WorldTest {
   }
 
   @Test
+  fun bombChipAddsABomb() {
+    val world = World(Random(0), bossAt = 99f)
+    world.setViewSize(1080f, 1920f)
+    world.startOrAdvance()
+    skipTakeoff(world)
+    world.movePlayer(0.5f, 0.55f)
+    val bombs = world.bombs
+    world.pickups +=
+      Pickup(world.playerX - World.PICKUP_DRAW * 0.5f, world.playerY - World.PICKUP_DRAW * 0.15f, PickupKind.BOMB)
+    world.step(1f / 60f)
+    assertEquals(bombs + 1, world.bombs)
+    assertEquals(0, world.power)
+  }
+
+  @Test
   fun fiveEnemyBoltsDestroyThePlayer() {
     val world = World(Random(0), bossAt = 99f)
     world.setViewSize(1080f, 1920f)
     world.startOrAdvance()
+    skipTakeoff(world)
     world.movePlayer(0.5f, 0.5f)
     repeat(90) {
       world.step(1f / 60f)
@@ -267,4 +293,49 @@ class WorldTest {
     world.exitDemo()
     assertEquals(Phase.READY, world.phase)
   }
+
+  @Test
+  fun takeoffLeavesTheRunway() {
+    val world = World(Random(0), bossAt = 99f)
+    world.setViewSize(1080f, 1920f)
+    world.startOrAdvance()
+    assertTrue(world.playerY > 0.88f)
+    assertEquals(World.GROUND_SCALE, world.playerScale, 0.01f)
+    assertTrue(!world.combat())
+    skipTakeoff(world)
+    assertEquals(World.DEFAULT_PLAYER_Y, world.playerY, 0.02f)
+    assertEquals(1f, world.playerScale, 0.01f)
+    assertTrue(world.combat())
+  }
+
+  @Test
+  fun bossClearLandsOnTheRunway() {
+    val world = World(Random(0), bossAt = 0.2f)
+    world.setViewSize(1080f, 1920f)
+    world.startOrAdvance()
+    skipTakeoff(world)
+    var guard = 0
+    while (world.boss == null && world.phase == Phase.PLAYING && guard++ < 600) {
+      world.mobs.clear()
+      world.step(1f / 60f)
+    }
+    assertTrue(world.boss != null)
+    guard = 0
+    while (world.phase == Phase.PLAYING && guard++ < 2800) {
+      val b = world.boss
+      if (b != null && !b.dying) {
+        world.shots += Shot(b.centerX(), b.centerY(), 0f, 0f, fromPlayer = true)
+      }
+      world.step(1f / 60f)
+    }
+    assertEquals(Phase.CLEARED, world.phase)
+    assertTrue(kotlin.math.abs(world.playerX - 0.5f) < 0.06f)
+    assertTrue(world.playerY > 0.86f)
+    assertEquals(World.GROUND_SCALE, world.playerScale, 0.04f)
+  }
+}
+
+private fun skipTakeoff(world: World) {
+  world.setViewSize(1080f, 1920f)
+  repeat((World.TAKEOFF_T * 60f).toInt() + 8) { world.step(1f / 60f) }
 }

@@ -105,6 +105,7 @@ fun WingStrikeScreen() {
       bomber = ImageBitmap.imageResource(R.drawable.spr_bomber),
       boss = ImageBitmap.imageResource(R.drawable.spr_boss),
       power = ImageBitmap.imageResource(R.drawable.spr_power),
+      bombChip = ImageBitmap.imageResource(R.drawable.spr_bomb),
       patrol = ImageBitmap.imageResource(R.drawable.spr_patrol),
       destroyer = ImageBitmap.imageResource(R.drawable.spr_destroyer),
       battleship = ImageBitmap.imageResource(R.drawable.spr_battleship),
@@ -209,7 +210,7 @@ fun WingStrikeScreen() {
           flipX = unit.flipDrawX(),
         )
       }
-      world.pickups.filter { it.alive }.forEach { drawPowerChip(shipArt, it.x, it.y, w, h) }
+      world.pickups.filter { it.alive }.forEach { drawPickup(shipArt, it, w, h) }
       world.mobs.filter { it.alive }.forEach { mob ->
         val bw = World.mobW(mob.kind)
         val bh = World.mobH(mob.kind)
@@ -223,7 +224,13 @@ fun WingStrikeScreen() {
       val show = world.phase != Phase.READY && world.phase != Phase.GAME_OVER &&
         world.playerOnField() && (!world.playerFlashing() || tick % 8 < 5)
       if (show) {
-        drawPlayerPlane(shipArt, world.playerLeft() * w, world.playerTop() * h, World.SHIP_W * w, World.SHIP_H * h)
+        drawPlayerPlane(
+          shipArt,
+          world.playerLeft() * w,
+          world.playerTop() * h,
+          World.SHIP_W * world.playerScale * w,
+          World.SHIP_H * world.playerScale * h,
+        )
       }
       world.shots.filter { it.alive && it.fromPlayer }.forEach { drawAllyShot(it.x, it.y, w, h, it.missile) }
     }
@@ -410,7 +417,7 @@ fun WingStrikeScreen() {
         )
       }
       Phase.PLAYING, Phase.DEMO -> {
-        if (world.phase == Phase.PLAYING) {
+        if (world.phase == Phase.PLAYING && world.combat()) {
         Column(
           modifier =
             Modifier

@@ -40,6 +40,7 @@ object StageMap {
   const val LAND_PANELS = 8
   const val PANEL_H_OVER_W = 1536f / 1024f
   const val TILE_H_OVER_W = PANEL_H_OVER_W * LAND_PANELS
+  const val RUNWAY_H_OVER_PANEL = 768f / 1536f
 
   fun periodN(viewAspect: Float): Float = viewAspect * TILE_H_OVER_W * ZOOM
 

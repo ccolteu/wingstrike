@@ -87,7 +87,7 @@ public final class MakeLoopAssets {
     int w = 1024;
     int panel = 1536;
     int panels = 8;
-    int capH = 256;
+    int capH = 768;
     int longH = panel * panels;
     int shoreW = w / 4;
     int maxLand = shoreW;
@@ -120,12 +120,10 @@ public final class MakeLoopAssets {
     stampColumn(out, left, 0, capH, longH - capH, true);
     stampColumn(out, right, 48, capH, longH - capH, false);
     g = out.createGraphics();
-
-    File runway = findAsset(assets, "spr_runway.png");
-    if (runway != null) {
-      BufferedImage cap = scaleTo(keyImage(ImageIO.read(runway), false), w, capH);
+    g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+    BufferedImage cap = buildRunwayCap(assets, w, capH);
+    if (cap != null) {
       g.drawImage(cap, 0, 0, null);
-      g.drawImage(cap, 0, longH - capH, null);
     }
     g.dispose();
     for (int y = 0; y < capH; y++) {
@@ -133,7 +131,7 @@ public final class MakeLoopAssets {
         out.setRGB(x, longH - capH + y, out.getRGB(x, y));
       }
     }
-    clipToChannel(out, maxLand);
+    clipToChannel(out, maxLand, capH);
     return out;
   }
 
@@ -246,10 +244,57 @@ public final class MakeLoopAssets {
     }
   }
 
-  private static void clipToChannel(BufferedImage land, int maxLand) {
+  private static BufferedImage buildRunwayCap(File assets, int w, int capH) throws Exception {
+    File runway = findAsset(assets, "spr_runway.png");
+    if (runway == null) return null;
+    BufferedImage src = keyImage(ImageIO.read(runway), false);
+    int srcW = src.getWidth();
+    int srcH = src.getHeight();
+    int footSrc = Math.max(8, Math.round(srcH * 0.22f));
+    int mid0 = Math.round(srcH * 0.16f);
+    int mid1 = srcH - footSrc;
+    int midH = Math.max(8, mid1 - mid0);
+    int tileH = Math.max(1, (w * midH / srcW));
+    while (tileH > 1 && capH % tileH != 0) tileH--;
+    BufferedImage mid = scaleTo(src.getSubimage(0, mid0, srcW, midH), w, tileH);
+    BufferedImage foot = scaleTo(src.getSubimage(0, mid1, srcW, footSrc), w, Math.max(48, w * footSrc / srcW));
+    BufferedImage cap = new BufferedImage(w, capH, BufferedImage.TYPE_INT_ARGB);
+    Graphics2D cg = cap.createGraphics();
+    cg.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+    for (int y = 0; y < capH; y += mid.getHeight()) {
+      int h = Math.min(mid.getHeight(), capH - y);
+      cg.drawImage(mid, 0, y, w, y + h, 0, 0, w, h, null);
+    }
+    int footY = (capH - foot.getHeight()) / 2;
+    cg.drawImage(foot, 0, footY, null);
+    cg.dispose();
+    int blend = Math.min(28, capH / 6);
+    for (int y = 0; y < blend; y++) {
+      float t = blend <= 1 ? 1f : y / (float) (blend - 1);
+      int yBot = capH - 1 - y;
+      for (int x = 0; x < w; x++) {
+        int top = cap.getRGB(x, y);
+        int bot = cap.getRGB(x, yBot);
+        cap.setRGB(x, yBot, lerpArgb(bot, top, 1f - t));
+      }
+    }
+    return cap;
+  }
+
+  private static int lerpArgb(int a, int b, float t) {
+    t = Math.max(0f, Math.min(1f, t));
+    int aa = (a >>> 24) & 255, ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+    int ba = (b >>> 24) & 255, br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+    int oA = Math.round(aa + (ba - aa) * t);
+    int oR = Math.round(ar + (br - ar) * t);
+    int oG = Math.round(ag + (bg - ag) * t);
+    int oB = Math.round(ab + (bb - ab) * t);
+    return (oA << 24) | (oR << 16) | (oG << 8) | oB;
+  }
+
+  private static void clipToChannel(BufferedImage land, int maxLand, int capH) {
     int w = land.getWidth();
     int h = land.getHeight();
-    int capH = 256;
     for (int y = capH; y < h - capH; y++) {
       for (int x = maxLand; x < w - maxLand; x++) land.setRGB(x, y, 0);
     }

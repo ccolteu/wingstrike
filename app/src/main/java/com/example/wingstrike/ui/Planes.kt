@@ -15,6 +15,8 @@ import androidx.compose.ui.unit.IntSize
 import com.example.wingstrike.game.Blast
 import com.example.wingstrike.game.GroundKind
 import com.example.wingstrike.game.MobKind
+import com.example.wingstrike.game.Pickup
+import com.example.wingstrike.game.PickupKind
 import com.example.wingstrike.game.StageMap
 import com.example.wingstrike.game.isShoreTile
 import kotlin.math.cos
@@ -27,6 +29,7 @@ internal class ShipArt(
   val bomber: ImageBitmap,
   val boss: ImageBitmap,
   val power: ImageBitmap,
+  val bombChip: ImageBitmap,
   val patrol: ImageBitmap,
   val destroyer: ImageBitmap,
   val battleship: ImageBitmap,
@@ -72,22 +75,23 @@ private fun DrawScope.tileLandPanels(
 ) {
   if (panels.isEmpty()) return
   val total = panelH * panels.size
-    val wrapped = ((worldY % total) + total) % total
-    val base = viewH - total + wrapped
-    for (i in panels.indices) {
-      val sy = base + i * panelH
-      val dh = panelH.toInt().coerceAtLeast(1)
-      for (shift in floatArrayOf(-total, 0f, total)) {
-        val y = sy + shift
-        if (y + panelH < -panelH || y > viewH + panelH) continue
-        drawImage(
-          image = panels[i],
-          dstOffset = IntOffset(ox, y.toInt()),
-          dstSize = IntSize(dstW, dh),
-          filterQuality = FilterQuality.Medium,
-        )
-      }
+  val wrapped = ((worldY % total) + total) % total
+  val base = viewH - total + wrapped
+  val pad = viewH
+  val dh = (panelH + 3f).toInt().coerceAtLeast(1)
+  for (i in panels.indices) {
+    val sy = base + i * panelH
+    for (k in -2..2) {
+      val y = sy + k * total
+      if (y + panelH < -pad || y > viewH + pad) continue
+      drawImage(
+        image = panels[i],
+        dstOffset = IntOffset(ox, (y - 1f).toInt()),
+        dstSize = IntSize(dstW, dh),
+        filterQuality = FilterQuality.Medium,
+      )
     }
+  }
 }
 
 private fun DrawScope.tileLayer(
@@ -99,12 +103,13 @@ private fun DrawScope.tileLayer(
   viewH: Float,
 ) {
   val off = ((worldY % period) + period) % period
-  var sy = off - period
-  while (sy < viewH + period) {
+  var sy = off - period * 2f
+  val dh = (period + 3f).toInt().coerceAtLeast(1)
+  while (sy < viewH + period * 2f) {
     drawImage(
       image = image,
-      dstOffset = IntOffset(ox, sy.toInt()),
-      dstSize = IntSize(dstW, period.toInt().coerceAtLeast(1)),
+      dstOffset = IntOffset(ox, (sy - 1f).toInt()),
+      dstSize = IntSize(dstW, dh),
       filterQuality = FilterQuality.Medium,
     )
     sy += period
@@ -284,9 +289,10 @@ internal fun DrawScope.drawFoeShot(x: Float, y: Float, w: Float, h: Float) {
   oval(Color(0xFFFFF0C0), cx, cy, r * 0.7f, r * 0.7f)
 }
 
-internal fun DrawScope.drawPowerChip(art: ShipArt, x: Float, y: Float, w: Float, h: Float) {
+internal fun DrawScope.drawPickup(art: ShipArt, pickup: Pickup, w: Float, h: Float) {
   val s = min(w, h) * 0.092f
-  drawFitted(art.power, x * w, y * h, s, s, alignTop = false)
+  val sprite = if (pickup.kind == PickupKind.BOMB) art.bombChip else art.power
+  drawFitted(sprite, pickup.x * w, pickup.y * h, s, s, alignTop = false)
 }
 
 internal fun DrawScope.drawBlast(blast: Blast, w: Float, h: Float) {
